@@ -54,10 +54,25 @@ const sortRowsByLedgerDate = (rows) =>
 		return Number(right.id || 0) - Number(left.id || 0);
 	});
 
+const normalizePageNumber = (value) => {
+	const page = Number.parseInt(String(value || '1'), 10);
+	return Number.isInteger(page) && page > 0 ? page : 1;
+};
+
+const normalizeComparableDate = (value) => String(value || '').slice(0, 10);
+
+const getRowTimestamp = (row) => row.created_at || row.updated_at || row.date;
+
 export const GET = ({ url }) => {
 	const start = url.searchParams.get('start');
 	const end = url.searchParams.get('end');
 	const entityId = url.searchParams.get('entityId');
+	const paymentMode = url.searchParams.get('paymentMode');
+	const expenseSource = url.searchParams.get('expenseSource');
+	const projectId = url.searchParams.get('projectId');
+	const timestampFrom = url.searchParams.get('timestampFrom');
+	const timestampTo = url.searchParams.get('timestampTo');
+	const pageParam = normalizePageNumber(url.searchParams.get('page'));
 	const limitParam = Number(url.searchParams.get('limit') || 100);
 	const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : 100;
 
@@ -107,7 +122,43 @@ export const GET = ({ url }) => {
 
 	sortRowsByLedgerDate(rows);
 
-	return json(rows.slice(0, limit));
+	const filteredRows = rows.filter((row) => {
+		if (start && end) {
+			const rowDate = String(row.date || '');
+			if (rowDate < start || rowDate > end) return false;
+		}
+
+		if (entityId && entityId !== 'all' && String(row.entity_id) !== String(entityId)) return false;
+		if (paymentMode && paymentMode !== 'all' && String(row.payment_mode || '') !== paymentMode) return false;
+		if (expenseSource && expenseSource !== 'all' && String(row.expense_source || '') !== expenseSource)
+			return false;
+		if (
+			projectId &&
+			projectId !== 'all' &&
+			!(row.project_ids || []).map(String).includes(String(projectId))
+		)
+			return false;
+
+		const rowTimestamp = normalizeComparableDate(getRowTimestamp(row));
+		if (timestampFrom && rowTimestamp < timestampFrom) return false;
+		if (timestampTo && rowTimestamp > timestampTo) return false;
+		return true;
+	});
+
+	const totalCount = filteredRows.length;
+	const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+	const page = Math.min(pageParam, totalPages);
+	const startIndex = (page - 1) * limit;
+
+	return json({
+		rows: filteredRows.slice(startIndex, startIndex + limit),
+		pagination: {
+			page,
+			limit,
+			totalCount,
+			totalPages
+		}
+	});
 };
 
 export const POST = async ({ request }) => {

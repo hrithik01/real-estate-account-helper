@@ -12,6 +12,7 @@
 	const today = new Date().toISOString().slice(0, 10);
 	const DEFAULT_PROJECT_STORAGE_KEY = 'balaji-default-project-id';
 	const FORM_DATE_STORAGE_KEY = 'balaji-expense-form-date';
+	const PAGE_SIZE = 100;
 	let entities = [];
 	let projects = [];
 	let accounts = [];
@@ -25,6 +26,11 @@
 	let message = '';
 	let formProjectsOpen = false;
 	let draftProjectsOpen = false;
+	let totalExpenseEntries = 0;
+	let expensePage = 1;
+	let expenseTotalPages = 1;
+	let isExpenseLoading = false;
+	let hasPendingExpenseFilters = false;
 
 	let showProjects = false;
 	let showType = false;
@@ -39,6 +45,12 @@
 	let filterProjectId = 'all';
 	let filterTimestampFrom = '';
 	let filterTimestampTo = '';
+	let appliedFilterEntityId = 'all';
+	let appliedFilterType = 'all';
+	let appliedFilterSource = 'all';
+	let appliedFilterProjectId = 'all';
+	let appliedFilterTimestampFrom = '';
+	let appliedFilterTimestampTo = '';
 	let defaultProjectId = '';
 
 	let form = {
@@ -175,6 +187,41 @@
 
 	const normalizedDate = (value) => String(value || '').slice(0, 10);
 	const getRowTimestamp = (row) => row.created_at || row.updated_at || row.date;
+	const normalizePageNumber = (value) => Math.max(1, Number.parseInt(String(value || '1'), 10) || 1);
+
+	const createExpenseSearchParams = () => {
+		const params = new URLSearchParams({
+			page: String(expensePage),
+			limit: String(PAGE_SIZE)
+		});
+
+		if (appliedFilterEntityId !== 'all') params.set('entityId', appliedFilterEntityId);
+		if (appliedFilterType !== 'all') params.set('paymentMode', appliedFilterType);
+		if (appliedFilterSource !== 'all') params.set('expenseSource', appliedFilterSource);
+		if (appliedFilterProjectId !== 'all') params.set('projectId', appliedFilterProjectId);
+		if (appliedFilterTimestampFrom) params.set('timestampFrom', appliedFilterTimestampFrom);
+		if (appliedFilterTimestampTo) params.set('timestampTo', appliedFilterTimestampTo);
+
+		return params;
+	};
+
+	const applyExpenseFilters = async () => {
+		appliedFilterEntityId = filterEntityId;
+		appliedFilterType = filterType;
+		appliedFilterSource = filterSource;
+		appliedFilterProjectId = filterProjectId;
+		appliedFilterTimestampFrom = filterTimestampFrom;
+		appliedFilterTimestampTo = filterTimestampTo;
+		expensePage = 1;
+		await loadExpenses();
+	};
+
+	const changeExpensePage = async (nextPage) => {
+		const targetPage = Math.min(Math.max(1, nextPage), expenseTotalPages);
+		if (targetPage === expensePage) return;
+		expensePage = targetPage;
+		await loadExpenses();
+	};
 
 	const loadMasters = async () => {
 		const [entitiesRes, projectsRes, accountsRes, optionsRes] = await Promise.all([
@@ -207,17 +254,29 @@
 	};
 
 	const loadExpenses = async () => {
-		const res = await fetch('/api/expenses?limit=100');
-		if (res.ok) {
-			expenseList = await res.json();
+		isExpenseLoading = true;
+		try {
+			const res = await fetch(`/api/expenses?${createExpenseSearchParams().toString()}`);
+			if (!res.ok) return;
+
+			const payload = await res.json();
+			expenseList = payload.rows || [];
+			filteredExpenseList = expenseList;
+			totalExpenseEntries = payload.pagination?.totalCount || 0;
+			expenseTotalPages = Math.max(1, payload.pagination?.totalPages || 1);
+			expensePage = normalizePageNumber(payload.pagination?.page || expensePage);
+
 			if (!defaultProjectId) {
 				persistDefaultProjectId(getLatestTransactionProjectId(expenseList));
 				if (!(form.project_ids || []).length) applyDefaultProjectToForm();
 			}
+
 			const preferredDate = getPreferredFormDate(expenseList);
 			if (preferredDate && !form.date) {
 				form = { ...form, date: preferredDate };
 			}
+		} finally {
+			isExpenseLoading = false;
 		}
 	};
 
@@ -258,6 +317,7 @@
 				comments: ''
 			};
 			applyDefaultProjectToForm();
+			expensePage = 1;
 			await loadExpenses();
 		} else {
 			const error = await res.json();
@@ -321,24 +381,15 @@
 		}
 	};
 
-	$: filteredExpenseList = expenseList.filter((row) => {
-		if (filterEntityId !== 'all' && String(row.entity_id) !== filterEntityId) return false;
-		if (filterType !== 'all' && String(row.payment_mode || '') !== filterType) return false;
-		if (filterSource !== 'all' && String(row.expense_source || '') !== filterSource) return false;
-		if (
-			filterProjectId !== 'all' &&
-			!(row.project_ids || []).map(String).includes(String(filterProjectId))
-		)
-			return false;
-
-		const rowDate = normalizedDate(getRowTimestamp(row));
-		if (filterTimestampFrom && rowDate < filterTimestampFrom) return false;
-		if (filterTimestampTo && rowDate > filterTimestampTo) return false;
-		return true;
-	});
-
 	$: availableFormEntities = getFilteredEntities(entities, form.project_ids || [], form.entity_id);
 	$: availableDraftEntities = getFilteredEntities(entities, draft.project_ids || [], draft.entity_id);
+	$: hasPendingExpenseFilters =
+		filterEntityId !== appliedFilterEntityId ||
+		filterType !== appliedFilterType ||
+		filterSource !== appliedFilterSource ||
+		filterProjectId !== appliedFilterProjectId ||
+		filterTimestampFrom !== appliedFilterTimestampFrom ||
+		filterTimestampTo !== appliedFilterTimestampTo;
 	$: if (typeof localStorage !== 'undefined' && form.date) {
 		localStorage.setItem(FORM_DATE_STORAGE_KEY, form.date);
 	}
@@ -407,7 +458,17 @@
 </section>
 
 <section class="panel">
-	<h2>Expenses (Latest 100 entries)</h2>
+	<div class="table-header">
+		<div>
+			<h2>Expenses</h2>
+			<p class="muted">Showing {filteredExpenseList.length} of {totalExpenseEntries} entries. {PAGE_SIZE} entries per page.</p>
+		</div>
+		<div class="pagination-controls">
+			<button class="secondary" on:click={() => changeExpensePage(expensePage - 1)} disabled={isExpenseLoading || expensePage <= 1}>Previous</button>
+			<span class="pagination-status">Page {expensePage} of {expenseTotalPages}</span>
+			<button class="secondary" on:click={() => changeExpensePage(expensePage + 1)} disabled={isExpenseLoading || expensePage >= expenseTotalPages}>Next</button>
+		</div>
+	</div>
 	<div class="detail-toggles">
 		<label><input type="checkbox" bind:checked={showProjects} /> <span>Show projects</span></label>
 		<label><input type="checkbox" bind:checked={showType} /> <span>Show type</span></label>
@@ -455,6 +516,10 @@
 				{/each}
 			</select>
 		</label>
+	</div>
+	<div class="filter-actions">
+		<button class="secondary" on:click={applyExpenseFilters} disabled={isExpenseLoading || !hasPendingExpenseFilters}>Execute</button>
+		{#if hasPendingExpenseFilters}<span class="muted">Filters changed. Click Execute to refresh the entries.</span>{/if}
 	</div>
 	<table>
 		<thead>
@@ -522,17 +587,24 @@
 			{/if}
 		</tbody>
 	</table>
+	<div class="pagination-footer">
+		<button class="secondary" on:click={() => changeExpensePage(expensePage - 1)} disabled={isExpenseLoading || expensePage <= 1}>Previous</button>
+		<span class="pagination-status">Page {expensePage} of {expenseTotalPages}</span>
+		<button class="secondary" on:click={() => changeExpensePage(expensePage + 1)} disabled={isExpenseLoading || expensePage >= expenseTotalPages}>Next</button>
+	</div>
 </section>
 
 <style>
 	.panel { background: var(--panel-bg); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); margin-bottom: 20px; }
 	.row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+	.table-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
 	.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
 	label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
 	label.multi-option { display: flex; align-items: center; gap: 8px; color: var(--text); }
 	label.wide { grid-column: 1 / -1; }
 	input, select, button { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
 	button { background: var(--primary-bg); color: var(--primary-text); border: none; cursor: pointer; }
+	button:disabled { opacity: 0.6; cursor: not-allowed; }
 	button.secondary { background: var(--secondary-bg); color: var(--secondary-text); border: 1px solid var(--border); }
 	button.ghost { background: transparent; color: var(--ghost-text); border: 1px solid var(--border); }
 	.multi-select { position: relative; }
@@ -541,9 +613,13 @@
 	.detail-toggles { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 14px; }
 	.detail-toggles label { display: flex; align-items: center; gap: 6px; }
 	.filters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 0 0 14px; }
+	.filter-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
 	.amount-shortcut-field { display: grid; gap: 8px; }
 	.amount-shortcuts { display: flex; gap: 8px; }
 	.shortcut-button { min-width: 52px; }
+	.pagination-controls, .pagination-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+	.pagination-footer { margin-top: 14px; justify-content: flex-end; }
+	.pagination-status { color: var(--muted); font-size: 14px; }
 	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 	th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px; vertical-align: top; }
 	.muted { color: var(--muted); }

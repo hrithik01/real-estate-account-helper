@@ -6,6 +6,7 @@
 	const today = new Date().toISOString().slice(0, 10);
 	const DEFAULT_PROJECT_STORAGE_KEY = 'balaji-default-project-id';
 	const FORM_DATE_STORAGE_KEY = 'balaji-income-form-date';
+	const PAGE_SIZE = 100;
 	let entities = [];
 	let projects = [];
 	let accounts = [];
@@ -19,6 +20,11 @@
 	let message = '';
 	let formProjectsOpen = false;
 	let draftProjectsOpen = false;
+	let totalIncomeEntries = 0;
+	let incomePage = 1;
+	let incomeTotalPages = 1;
+	let isIncomeLoading = false;
+	let hasPendingIncomeFilters = false;
 
 	let showProjects = false;
 	let showType = false;
@@ -33,6 +39,12 @@
 	let filterProjectId = 'all';
 	let filterTimestampFrom = '';
 	let filterTimestampTo = '';
+	let appliedFilterEntityId = 'all';
+	let appliedFilterType = 'all';
+	let appliedFilterSource = 'all';
+	let appliedFilterProjectId = 'all';
+	let appliedFilterTimestampFrom = '';
+	let appliedFilterTimestampTo = '';
 	let defaultProjectId = '';
 
 	let form = {
@@ -159,6 +171,41 @@
 
 	const normalizedDate = (value) => String(value || '').slice(0, 10);
 	const getRowTimestamp = (row) => row.created_at || row.updated_at || row.date;
+	const normalizePageNumber = (value) => Math.max(1, Number.parseInt(String(value || '1'), 10) || 1);
+
+	const createIncomeSearchParams = () => {
+		const params = new URLSearchParams({
+			page: String(incomePage),
+			limit: String(PAGE_SIZE)
+		});
+
+		if (appliedFilterEntityId !== 'all') params.set('entityId', appliedFilterEntityId);
+		if (appliedFilterType !== 'all') params.set('paymentMode', appliedFilterType);
+		if (appliedFilterSource !== 'all') params.set('creditSource', appliedFilterSource);
+		if (appliedFilterProjectId !== 'all') params.set('projectId', appliedFilterProjectId);
+		if (appliedFilterTimestampFrom) params.set('timestampFrom', appliedFilterTimestampFrom);
+		if (appliedFilterTimestampTo) params.set('timestampTo', appliedFilterTimestampTo);
+
+		return params;
+	};
+
+	const applyIncomeFilters = async () => {
+		appliedFilterEntityId = filterEntityId;
+		appliedFilterType = filterType;
+		appliedFilterSource = filterSource;
+		appliedFilterProjectId = filterProjectId;
+		appliedFilterTimestampFrom = filterTimestampFrom;
+		appliedFilterTimestampTo = filterTimestampTo;
+		incomePage = 1;
+		await loadIncome();
+	};
+
+	const changeIncomePage = async (nextPage) => {
+		const targetPage = Math.min(Math.max(1, nextPage), incomeTotalPages);
+		if (targetPage === incomePage) return;
+		incomePage = targetPage;
+		await loadIncome();
+	};
 
 	const loadMasters = async () => {
 		const [entitiesRes, projectsRes, accountsRes, optionsRes] = await Promise.all([
@@ -191,17 +238,29 @@
 	};
 
 	const loadIncome = async () => {
-		const res = await fetch('/api/income?limit=100');
-		if (res.ok) {
-			incomeList = await res.json();
+		isIncomeLoading = true;
+		try {
+			const res = await fetch(`/api/income?${createIncomeSearchParams().toString()}`);
+			if (!res.ok) return;
+
+			const payload = await res.json();
+			incomeList = payload.rows || [];
+			filteredIncomeList = incomeList;
+			totalIncomeEntries = payload.pagination?.totalCount || 0;
+			incomeTotalPages = Math.max(1, payload.pagination?.totalPages || 1);
+			incomePage = normalizePageNumber(payload.pagination?.page || incomePage);
+
 			if (!defaultProjectId) {
 				persistDefaultProjectId(getLatestTransactionProjectId(incomeList));
 				if (!(form.project_ids || []).length) applyDefaultProjectToForm();
 			}
+
 			const preferredDate = getPreferredFormDate(incomeList);
 			if (preferredDate && !form.date) {
 				form = { ...form, date: preferredDate };
 			}
+		} finally {
+			isIncomeLoading = false;
 		}
 	};
 
@@ -239,6 +298,7 @@
 				comments: ''
 			};
 			applyDefaultProjectToForm();
+			incomePage = 1;
 			await loadIncome();
 		} else {
 			const error = await res.json();
@@ -299,24 +359,15 @@
 		}
 	};
 
-	$: filteredIncomeList = incomeList.filter((row) => {
-		if (filterEntityId !== 'all' && String(row.entity_id) !== filterEntityId) return false;
-		if (filterType !== 'all' && String(row.payment_mode || '') !== filterType) return false;
-		if (filterSource !== 'all' && String(row.credit_source || '') !== filterSource) return false;
-		if (
-			filterProjectId !== 'all' &&
-			!(row.project_ids || []).map(String).includes(String(filterProjectId))
-		)
-			return false;
-
-		const rowDate = normalizedDate(getRowTimestamp(row));
-		if (filterTimestampFrom && rowDate < filterTimestampFrom) return false;
-		if (filterTimestampTo && rowDate > filterTimestampTo) return false;
-		return true;
-	});
-
 	$: availableFormEntities = getFilteredEntities(entities, form.project_ids || [], form.entity_id);
 	$: availableDraftEntities = getFilteredEntities(entities, draft.project_ids || [], draft.entity_id);
+	$: hasPendingIncomeFilters =
+		filterEntityId !== appliedFilterEntityId ||
+		filterType !== appliedFilterType ||
+		filterSource !== appliedFilterSource ||
+		filterProjectId !== appliedFilterProjectId ||
+		filterTimestampFrom !== appliedFilterTimestampFrom ||
+		filterTimestampTo !== appliedFilterTimestampTo;
 	$: if (typeof localStorage !== 'undefined' && form.date) {
 		localStorage.setItem(FORM_DATE_STORAGE_KEY, form.date);
 	}
@@ -396,7 +447,17 @@
 </section>
 
 <section class="panel">
-	<h2>Income (Latest 100 entries)</h2>
+	<div class="table-header">
+		<div>
+			<h2>Income</h2>
+			<p class="muted">Showing {filteredIncomeList.length} of {totalIncomeEntries} entries. {PAGE_SIZE} entries per page.</p>
+		</div>
+		<div class="pagination-controls">
+			<button class="secondary" on:click={() => changeIncomePage(incomePage - 1)} disabled={isIncomeLoading || incomePage <= 1}>Previous</button>
+			<span class="pagination-status">Page {incomePage} of {incomeTotalPages}</span>
+			<button class="secondary" on:click={() => changeIncomePage(incomePage + 1)} disabled={isIncomeLoading || incomePage >= incomeTotalPages}>Next</button>
+		</div>
+	</div>
 	<div class="detail-toggles">
 		<label><input type="checkbox" bind:checked={showProjects} /> <span>Show projects</span></label>
 		<label><input type="checkbox" bind:checked={showType} /> <span>Show type</span></label>
@@ -444,6 +505,10 @@
 				{/each}
 			</select>
 		</label>
+	</div>
+	<div class="filter-actions">
+		<button class="secondary" on:click={applyIncomeFilters} disabled={isIncomeLoading || !hasPendingIncomeFilters}>Execute</button>
+		{#if hasPendingIncomeFilters}<span class="muted">Filters changed. Click Execute to refresh the entries.</span>{/if}
 	</div>
 	<table>
 		<thead>
@@ -531,17 +596,24 @@
 			{/if}
 		</tbody>
 	</table>
+	<div class="pagination-footer">
+		<button class="secondary" on:click={() => changeIncomePage(incomePage - 1)} disabled={isIncomeLoading || incomePage <= 1}>Previous</button>
+		<span class="pagination-status">Page {incomePage} of {incomeTotalPages}</span>
+		<button class="secondary" on:click={() => changeIncomePage(incomePage + 1)} disabled={isIncomeLoading || incomePage >= incomeTotalPages}>Next</button>
+	</div>
 </section>
 
 <style>
 	.panel { background: var(--panel-bg); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); margin-bottom: 20px; }
 	.row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+	.table-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
 	.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
 	label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
 	label.multi-option { display: flex; align-items: center; gap: 8px; color: var(--text); }
 	label.wide { grid-column: 1 / -1; }
 	input, select, button { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
 	button { background: var(--primary-bg); color: var(--primary-text); border: none; cursor: pointer; }
+	button:disabled { opacity: 0.6; cursor: not-allowed; }
 	button.secondary { background: var(--secondary-bg); color: var(--secondary-text); border: 1px solid var(--border); }
 	button.ghost { background: transparent; color: var(--ghost-text); border: 1px solid var(--border); }
 	.multi-select { position: relative; }
@@ -550,9 +622,13 @@
 	.detail-toggles { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 14px; }
 	.detail-toggles label { display: flex; align-items: center; gap: 6px; }
 	.filters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 0 0 14px; }
+	.filter-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 14px; }
 	.amount-shortcut-field { display: grid; gap: 8px; }
 	.amount-shortcuts { display: flex; gap: 8px; }
 	.shortcut-button { min-width: 52px; }
+	.pagination-controls, .pagination-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+	.pagination-footer { margin-top: 14px; justify-content: flex-end; }
+	.pagination-status { color: var(--muted); font-size: 14px; }
 	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 	th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px; vertical-align: top; }
 	.muted { color: var(--muted); }

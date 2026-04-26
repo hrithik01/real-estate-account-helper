@@ -5,6 +5,7 @@
 	const today = new Date().toISOString().slice(0, 10);
 	let startDate = today;
 	let endDate = today;
+	let datePreset = '';
 	let reportType = 'combined';
 	let sortOrder = 'latest';
 	let entities = [];
@@ -26,6 +27,31 @@
 
 	const formatINR = (value) =>
 		new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value || 0);
+
+	const toIsoDate = (value) => value.toISOString().slice(0, 10);
+
+	const applyDatePreset = (preset) => {
+		datePreset = preset;
+		if (!preset) return;
+
+		const nextEndDate = new Date();
+		const nextStartDate = new Date(nextEndDate);
+
+		if (preset === 'last-month') {
+			nextStartDate.setMonth(nextStartDate.getMonth() - 1);
+		} else if (preset === 'last-3-months') {
+			nextStartDate.setMonth(nextStartDate.getMonth() - 3);
+		} else if (preset === 'last-year') {
+			nextStartDate.setFullYear(nextStartDate.getFullYear() - 1);
+		} else if (preset === 'last-3-years') {
+			nextStartDate.setFullYear(nextStartDate.getFullYear() - 3);
+		} else if (preset === 'last-5-years') {
+			nextStartDate.setFullYear(nextStartDate.getFullYear() - 5);
+		}
+
+		startDate = toIsoDate(nextStartDate);
+		endDate = toIsoDate(nextEndDate);
+	};
 
 	const loadFilters = async () => {
 		const [entitiesRes, projectsRes] = await Promise.all([fetch('/api/entities'), fetch('/api/projects')]);
@@ -84,6 +110,17 @@
 		<label><span>Start Date</span><input type="date" bind:value={startDate} /></label>
 		<label><span>End Date</span><input type="date" bind:value={endDate} /></label>
 		<label>
+			<span>Quick Range</span>
+			<select bind:value={datePreset} on:change={(event) => applyDatePreset(event.currentTarget.value)}>
+				<option value="">Custom</option>
+				<option value="last-month">Last month</option>
+				<option value="last-3-months">Last 3 months</option>
+				<option value="last-year">Last year</option>
+				<option value="last-3-years">Last 3 years</option>
+				<option value="last-5-years">Last 5 years</option>
+			</select>
+		</label>
+		<label>
 			<span>Report Type</span>
 			<select bind:value={reportType}>
 				<option value="income">Income</option>
@@ -98,7 +135,7 @@
 				<option value="oldest">Oldest to latest</option>
 			</select>
 		</label>
-		<label>
+		<label class="wide">
 			<span>Entities</span>
 			<div class="multi-select">
 				<button type="button" class="multi-trigger" on:click={() => (entitiesOpen = !entitiesOpen)}>{selectedEntityLabel()}</button>
@@ -114,7 +151,7 @@
 				{/if}
 			</div>
 		</label>
-		<label>
+		<label class="wide">
 			<span>Projects</span>
 			<div class="multi-select">
 				<button type="button" class="multi-trigger" on:click={() => (projectsOpen = !projectsOpen)}>{selectedProjectLabel()}</button>
@@ -258,12 +295,13 @@
 	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 	.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 	label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
+	label.wide { grid-column: 1 / -1; }
 	label.multi-option { display: flex; align-items: center; gap: 8px; color: var(--text); }
 	input, select, button { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
 	button { background: var(--primary-bg); color: var(--primary-text); border: none; cursor: pointer; }
-	.multi-select { position: relative; }
+	.multi-select { display: grid; gap: 6px; }
 	.multi-trigger { width: 100%; text-align: left; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
-	.multi-menu { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 10; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px; max-height: 220px; overflow: auto; display: grid; gap: 6px; }
+	.multi-menu { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px; max-height: 280px; overflow: auto; display: grid; gap: 6px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08); }
 	.detail-toggles { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px; }
 	.detail-toggles label { display: flex; align-items: center; gap: 6px; }
 	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
