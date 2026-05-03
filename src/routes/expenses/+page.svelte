@@ -162,13 +162,15 @@
 	};
 
 	const getPreferredFormDate = (rows) => {
+		const latestTransactionDate = toIsoDate(rows?.[0]?.date);
+		if (latestTransactionDate) return latestTransactionDate;
+
 		if (typeof localStorage !== 'undefined') {
 			const storedDate = localStorage.getItem(FORM_DATE_STORAGE_KEY) || '';
 			if (toIsoDate(storedDate)) return toIsoDate(storedDate);
 		}
 
-		const latestTransactionDate = toIsoDate(rows?.[0]?.date);
-		return latestTransactionDate || today;
+		return today;
 	};
 
 	const getLatestTransactionProjectId = (rows) => {
@@ -571,7 +573,7 @@
 						{#if showSource}<td>{#if editingId === row.id}<select bind:value={draft.expense_source}>{#each expenseSources as source}<option value={source}>{source}</option>{/each}</select>{:else}{row.expense_source || '-'}{/if}</td>{/if}
 						{#if showAttachment}<td>{#if editingId === row.id}<select bind:value={draft.master_owner}>{#each MASTER_OWNERS as owner}<option value={owner.key}>{owner.key}</option>{/each}</select>{:else}{row.master_owner}{/if}</td>{/if}
 						{#if showAccount}<td>{#if editingId === row.id}<select bind:value={draft.account_id} disabled={draft.payment_mode !== 'account'}><option value="">Select</option>{#each accounts as account}<option value={account.id}>{account.account_holder}</option>{/each}</select>{:else}{row.account_holder || '-'}{/if}</td>{/if}
-						<td>{#if editingId === row.id}<input type="number" min="1" step="1" bind:value={draft.amount} />{:else}{formatINR(row.amount)}{/if}</td>
+						<td class="amount-cell">{#if editingId === row.id}<input type="number" min="1" step="1" bind:value={draft.amount} />{:else}{formatINR(row.amount)}{/if}</td>
 						<td>{#if editingId === row.id}<input type="text" bind:value={draft.comments} />{:else}{row.comments || '-'}{/if}</td>
 						<td>
 							{#if editingId === row.id}
@@ -622,5 +624,7 @@
 	.pagination-status { color: var(--muted); font-size: 14px; }
 	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 	th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px; vertical-align: top; }
+	.amount-cell { font-weight: 700; }
+	.amount-cell input { font-weight: 700; }
 	.muted { color: var(--muted); }
 </style>
