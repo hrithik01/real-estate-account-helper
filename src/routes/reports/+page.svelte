@@ -1,464 +1,468 @@
 <script>
 	// @ts-nocheck
 	import { onMount } from 'svelte';
+	import { api, storage } from '$lib/api.js';
+	import { formatDate, formatINR, formatShortDate, labelize, todayIso, toIsoDate, plural } from '$lib/format.js';
+	import { downloadCsv, slug } from '$lib/csv.js';
+	import { toast } from '$lib/toast.js';
+	import Icon from '$lib/components/Icon.svelte';
+	import MultiSelect from '$lib/components/MultiSelect.svelte';
 
-	const today = new Date().toISOString().slice(0, 10);
-	let startDate = today;
-	let endDate = today;
-	let datePreset = '';
+	export let data;
+
+	const PRESETS = [
+		{ key: 'this-month', label: 'This month' },
+		{ key: 'last-month', label: 'Last month' },
+		{ key: 'last-3-months', label: 'Last 3 months' },
+		{ key: 'this-fy', label: 'This financial year' },
+		{ key: 'last-fy', label: 'Last financial year' },
+		{ key: 'last-year', label: 'Last 12 months' },
+		{ key: 'last-3-years', label: 'Last 3 years' },
+		{ key: 'last-5-years', label: 'Last 5 years' }
+	];
+	const COLUMN_DEFS = [
+		{ key: 'projects', label: 'Projects' },
+		{ key: 'type', label: 'Mode' },
+		{ key: 'source', label: 'Source' },
+		{ key: 'head', label: 'Master balance' }
+	];
+
+	let startDate = todayIso();
+	let endDate = todayIso();
+	let preset = '';
 	let reportType = 'combined';
 	let sortOrder = 'latest';
 	let entities = [];
 	let projects = [];
 	let selectedEntityIds = [];
 	let selectedProjectIds = [];
-	let entitiesOpen = false;
-	let projectsOpen = false;
 	let report = null;
-	let message = '';
-	let showIncomeProjects = false;
-	let showIncomeType = false;
-	let showIncomeSource = false;
-	let showIncomeAttachment = false;
-	let showExpenseProjects = false;
-	let showExpenseType = false;
-	let showExpenseSource = false;
-	let showExpenseAttachment = false;
+	let running = false;
+	let columns = readColumns();
 
-	const formatINR = (value) =>
-		new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value || 0);
-
-	const formatShortDate = (value) => {
-		const raw = String(value || '').trim();
-		if (!raw) return '-';
-
-		const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-		if (slashMatch) {
-			const day = slashMatch[1].padStart(2, '0');
-			const month = slashMatch[2].padStart(2, '0');
-			const year = slashMatch[3].slice(-2);
-			return `${day}/${month}/${year}`;
+	function readColumns() {
+		try {
+			const stored = JSON.parse(storage.get('ledger:report-columns', '{}'));
+			return {
+				income: Object.fromEntries(COLUMN_DEFS.map((c) => [c.key, Boolean(stored.income?.[c.key])])),
+				expense: Object.fromEntries(COLUMN_DEFS.map((c) => [c.key, Boolean(stored.expense?.[c.key])]))
+			};
+		} catch {
+			return { income: {}, expense: {} };
 		}
+	}
 
-		const date = new Date(`${raw}T00:00:00`);
-		if (Number.isNaN(date.getTime())) return raw;
-
-		const day = String(date.getDate()).padStart(2, '0');
-		const month = String(date.getMonth() + 1).padStart(2, '0');
-		const year = String(date.getFullYear()).slice(-2);
-		return `${day}/${month}/${year}`;
+	const toggleColumn = (side, key) => {
+		columns = { ...columns, [side]: { ...columns[side], [key]: !columns[side][key] } };
+		storage.set('ledger:report-columns', JSON.stringify(columns));
 	};
 
-	const sourceWiseCumulative = (rows = []) => {
-		const totals = new Map();
-
-		for (const row of rows) {
-			const sourceLabel = String(row.source || '').trim() || 'Unspecified';
-			const normalizedSource = sourceLabel.toLowerCase();
-			if (normalizedSource === 'total') continue;
-
-			const nextValue = (totals.get(sourceLabel) || 0) + Number(row.amount || 0);
-			totals.set(sourceLabel, nextValue);
+	const applyPreset = (key) => {
+		preset = key;
+		if (!key) return;
+		const now = new Date();
+		let start = new Date(now);
+		let end = new Date(now);
+		const fyStartYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+		if (key === 'this-month') start = new Date(now.getFullYear(), now.getMonth(), 1);
+		if (key === 'last-month') {
+			start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+			end = new Date(now.getFullYear(), now.getMonth(), 0);
 		}
+		if (key === 'last-3-months') start.setMonth(start.getMonth() - 3);
+		if (key === 'this-fy') start = new Date(fyStartYear, 3, 1);
+		if (key === 'last-fy') {
+			start = new Date(fyStartYear - 1, 3, 1);
+			end = new Date(fyStartYear, 2, 31);
+		}
+		if (key === 'last-year') start.setFullYear(start.getFullYear() - 1);
+		if (key === 'last-3-years') start.setFullYear(start.getFullYear() - 3);
+		if (key === 'last-5-years') start.setFullYear(start.getFullYear() - 5);
+		startDate = toIsoDate(start);
+		endDate = toIsoDate(end);
+	};
 
+	const sourceTotals = (rows = []) => {
+		const totals = new Map();
+		for (const row of rows) {
+			const key = String(row.source || '').trim() || 'Unspecified';
+			totals.set(key, (totals.get(key) || 0) + Number(row.amount || 0));
+		}
+		const grand = [...totals.values()].reduce((sum, value) => sum + value, 0);
 		return [...totals.entries()]
-			.map(([source, total]) => ({ source, total }))
-			.filter((item) => Number(item.total) !== 0)
+			.map(([source, total]) => ({ source, total, share: grand ? total / grand : 0 }))
+			.filter((item) => item.total !== 0)
 			.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
 	};
 
-	$: incomeSourceCumulative = sourceWiseCumulative(report?.rows?.income || []);
-	$: expenseSourceCumulative = sourceWiseCumulative(report?.rows?.expenses || []);
-
-	const toIsoDate = (value) => value.toISOString().slice(0, 10);
-
-	const applyDatePreset = (preset) => {
-		datePreset = preset;
-		if (!preset) return;
-
-		const nextEndDate = new Date();
-		const nextStartDate = new Date(nextEndDate);
-
-		if (preset === 'last-month') {
-			nextStartDate.setMonth(nextStartDate.getMonth() - 1);
-		} else if (preset === 'last-3-months') {
-			nextStartDate.setMonth(nextStartDate.getMonth() - 3);
-		} else if (preset === 'last-year') {
-			nextStartDate.setFullYear(nextStartDate.getFullYear() - 1);
-		} else if (preset === 'last-3-years') {
-			nextStartDate.setFullYear(nextStartDate.getFullYear() - 3);
-		} else if (preset === 'last-5-years') {
-			nextStartDate.setFullYear(nextStartDate.getFullYear() - 5);
-		}
-
-		startDate = toIsoDate(nextStartDate);
-		endDate = toIsoDate(nextEndDate);
-	};
-
-	const loadFilters = async () => {
-		const [entitiesRes, projectsRes] = await Promise.all([fetch('/api/entities'), fetch('/api/projects')]);
-		if (entitiesRes.ok) entities = await entitiesRes.json();
-		if (projectsRes.ok) projects = await projectsRes.json();
-	};
-
-	const toggleSelection = (list, value) => {
-		const normalized = String(value);
-		return list.includes(normalized)
-			? list.filter((item) => String(item) !== normalized)
-			: [...list, normalized];
-	};
-
-	const selectedEntityLabel = () => {
-		const labels = entities
-			.filter((entity) => selectedEntityIds.includes(String(entity.id)))
-			.map((entity) => `${entity.name} (${entity.entity_code})`);
-		if (labels.length === 0) return 'All entities';
-		return labels.join(', ');
-	};
-
-	const selectedProjectLabel = () => {
-		const labels = projects
-			.filter((project) => selectedProjectIds.includes(String(project.id)))
-			.map((project) => project.property_name);
-		if (labels.length === 0) return 'All projects';
-		return labels.join(', ');
-	};
+	$: entityOptions = entities.map((entity) => ({ value: String(entity.id), label: entity.name, hint: entity.entity_code }));
+	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name }));
+	$: sections = report
+		? [
+				...(report.reportType !== 'expense'
+					? [{ side: 'income', title: 'Income', rows: report.rows.income, total: report.total_income, sources: sourceTotals(report.rows.income) }]
+					: []),
+				...(report.reportType !== 'income'
+					? [{ side: 'expense', title: 'Expenses', rows: report.rows.expenses, total: report.total_expense, sources: sourceTotals(report.rows.expenses) }]
+					: [])
+			]
+		: [];
+	$: filterSummary = [
+		selectedEntityIds.length ? `${selectedEntityIds.length} entit${selectedEntityIds.length === 1 ? 'y' : 'ies'}` : 'All entities',
+		selectedProjectIds.length
+			? projects.filter((p) => selectedProjectIds.includes(String(p.id))).map((p) => p.property_name).join(', ')
+			: 'All projects'
+	].join(' · ');
 
 	const runReport = async () => {
-		message = '';
-		const entityIdsParam = selectedEntityIds.length > 0 ? selectedEntityIds.join(',') : 'all';
-		const projectIdsParam = selectedProjectIds.length > 0 ? selectedProjectIds.join(',') : 'all';
-		const res = await fetch(
-			`/api/reports?start=${startDate}&end=${endDate}&reportType=${reportType}&sortOrder=${sortOrder}&entityIds=${entityIdsParam}&projectIds=${projectIdsParam}`
-		);
-		if (res.ok) {
-			report = await res.json();
-		} else {
-			const error = await res.json();
-			message = error.error || 'Failed to run report.';
+		if (startDate > endDate) return toast.error('Start date must be on or before the end date.');
+		running = true;
+		try {
+			const params = new URLSearchParams({
+				start: startDate,
+				end: endDate,
+				reportType,
+				sortOrder,
+				entityIds: selectedEntityIds.length ? selectedEntityIds.join(',') : 'all',
+				projectIds: selectedProjectIds.length ? selectedProjectIds.join(',') : 'all'
+			});
+			report = await api(`/api/reports?${params}`);
+		} catch (err) {
+			toast.error(err.message);
+		} finally {
+			running = false;
 		}
 	};
 
-	const printMinimalReport = () => {
-		window.print();
+	const exportCsv = () => {
+		const rows = sections.flatMap((section) => section.rows.map((row) => ({ ...row, side: section.side })));
+		downloadCsv(
+			`${slug(data.company.name)}-report-${report.start}-to-${report.end}.csv`,
+			[
+				{ label: 'Type', value: (row) => (row.side === 'income' ? 'Income' : 'Expense') },
+				{ label: 'Date', value: (row) => row.date },
+				{ label: 'Entity', value: (row) => row.entity_name },
+				{ label: 'Projects', value: (row) => row.project_names },
+				{ label: 'Mode', value: (row) => row.payment_mode },
+				{ label: 'Source', value: (row) => row.source },
+				{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
+				{ label: 'Amount', value: (row) => row.amount },
+				{ label: 'Entity cumulative', value: (row) => row.entity_cumulative },
+				{ label: 'Comments', value: (row) => row.comments }
+			],
+			rows
+		);
 	};
 
 	onMount(async () => {
-		await loadFilters();
+		applyPreset('this-fy');
+		try {
+			[entities, projects] = await Promise.all([api('/api/entities'), api('/api/projects')]);
+		} catch (err) {
+			toast.error(err.message);
+		}
 		await runReport();
 	});
 </script>
 
-<section class="panel no-print">
-	<h2>Reports</h2>
-	<p class="muted">Generate income, expense, or combined report and filter by one or more entities/projects.</p>
-	<div class="form-grid">
-		<label><span>Start Date</span><input type="date" bind:value={startDate} /></label>
-		<label><span>End Date</span><input type="date" bind:value={endDate} /></label>
-		<label>
-			<span>Quick Range</span>
-			<select bind:value={datePreset} on:change={(event) => applyDatePreset(event.currentTarget.value)}>
-				<option value="">Custom</option>
-				<option value="last-month">Last month</option>
-				<option value="last-3-months">Last 3 months</option>
-				<option value="last-year">Last year</option>
-				<option value="last-3-years">Last 3 years</option>
-				<option value="last-5-years">Last 5 years</option>
-			</select>
-		</label>
-		<label>
-			<span>Report Type</span>
-			<select bind:value={reportType}>
-				<option value="income">Income</option>
-				<option value="expense">Expense</option>
-				<option value="combined">Combined</option>
-			</select>
-		</label>
-		<label>
-			<span>Date Order</span>
-			<select bind:value={sortOrder}>
-				<option value="latest">Latest to oldest</option>
-				<option value="oldest">Oldest to latest</option>
-			</select>
-		</label>
-		<label class="wide">
-			<span>Entities</span>
-			<div class="multi-select">
-				<button type="button" class="multi-trigger" on:click={() => (entitiesOpen = !entitiesOpen)}>{selectedEntityLabel()}</button>
-				{#if entitiesOpen}
-					<div class="multi-menu">
-						{#each entities as entity}
-							<label class="multi-option">
-								<input type="checkbox" checked={selectedEntityIds.includes(String(entity.id))} on:change={() => (selectedEntityIds = toggleSelection(selectedEntityIds, entity.id))} />
-								<span>{entity.name} ({entity.entity_code})</span>
-							</label>
-						{/each}
-					</div>
-				{/if}
-			</div>
-		</label>
-		<label class="wide">
-			<span>Projects</span>
-			<div class="multi-select">
-				<button type="button" class="multi-trigger" on:click={() => (projectsOpen = !projectsOpen)}>{selectedProjectLabel()}</button>
-				{#if projectsOpen}
-					<div class="multi-menu">
-						{#each projects as project}
-							<label class="multi-option">
-								<input type="checkbox" checked={selectedProjectIds.includes(String(project.id))} on:change={() => (selectedProjectIds = toggleSelection(selectedProjectIds, project.id))} />
-								<span>{project.property_name}</span>
-							</label>
-						{/each}
-					</div>
-				{/if}
-			</div>
-		</label>
+<header class="page-header no-print">
+	<div>
+		<p class="eyebrow">{data.company.name}</p>
+		<h1>Reports</h1>
+		<p>Income, expense or combined statements with entity running totals and source breakdowns.</p>
 	</div>
-	<div class="action-row">
-		<button on:click={runReport}>Run Report</button>
-		<button class="secondary" on:click={printMinimalReport} disabled={!report}>Print (Minimal)</button>
+	<div class="page-actions">
+		<button class="btn" type="button" on:click={exportCsv} disabled={!report}><Icon name="download" size={15} /> Export CSV</button>
+		<button class="btn" type="button" on:click={() => window.print()} disabled={!report}><Icon name="printer" size={15} /> Print</button>
 	</div>
-	{#if message}<p class="muted">{message}</p>{/if}
+</header>
+
+<section class="card no-print">
+	<form class="card-body" on:submit|preventDefault={runReport}>
+		<div class="form-grid">
+			<label class="field">
+				<span class="label">Quick range</span>
+				<select class="select" bind:value={preset} on:change={(event) => applyPreset(event.currentTarget.value)}>
+					<option value="">Custom</option>
+					{#each PRESETS as item}<option value={item.key}>{item.label}</option>{/each}
+				</select>
+			</label>
+			<label class="field"><span class="label">From</span><input class="input" type="date" bind:value={startDate} on:input={() => (preset = '')} /></label>
+			<label class="field"><span class="label">To</span><input class="input" type="date" bind:value={endDate} on:input={() => (preset = '')} /></label>
+			<div class="field">
+				<span class="label">Report type</span>
+				<div class="segmented" role="radiogroup" aria-label="Report type">
+					{#each ['combined', 'income', 'expense'] as type}
+						<button type="button" role="radio" aria-checked={reportType === type} class:active={reportType === type} on:click={() => (reportType = type)}>{type}</button>
+					{/each}
+				</div>
+			</div>
+			<div class="field">
+				<label class="label" for="report-entities">Entities</label>
+				<MultiSelect id="report-entities" options={entityOptions} bind:value={selectedEntityIds} placeholder="All entities" />
+			</div>
+			<div class="field">
+				<label class="label" for="report-projects">Projects</label>
+				<MultiSelect id="report-projects" options={projectOptions} bind:value={selectedProjectIds} placeholder="All projects" />
+			</div>
+			<label class="field">
+				<span class="label">Date order</span>
+				<select class="select" bind:value={sortOrder}>
+					<option value="latest">Latest first</option>
+					<option value="oldest">Oldest first</option>
+				</select>
+			</label>
+			<div class="field run">
+				<button class="btn btn-primary" type="submit" disabled={running}><Icon name="refresh" size={15} /> {running ? 'Running…' : 'Run report'}</button>
+			</div>
+		</div>
+	</form>
 </section>
 
 {#if report}
-	{#if reportType !== 'expense'}
-		<section class="panel no-print">
-			<h3>Income Columns</h3>
-			<div class="detail-toggles">
-				<label><input type="checkbox" bind:checked={showIncomeProjects} /> <span>Show income projects</span></label>
-				<label><input type="checkbox" bind:checked={showIncomeType} /> <span>Show income type</span></label>
-				<label><input type="checkbox" bind:checked={showIncomeSource} /> <span>Show income source</span></label>
-				<label><input type="checkbox" bind:checked={showIncomeAttachment} /> <span>Show income attachment</span></label>
-			</div>
-		</section>
-	{/if}
-
-	{#if reportType !== 'income'}
-		<section class="panel no-print">
-			<h3>Expense Columns</h3>
-			<div class="detail-toggles">
-				<label><input type="checkbox" bind:checked={showExpenseProjects} /> <span>Show expense projects</span></label>
-				<label><input type="checkbox" bind:checked={showExpenseType} /> <span>Show expense type</span></label>
-				<label><input type="checkbox" bind:checked={showExpenseSource} /> <span>Show expense source</span></label>
-				<label><input type="checkbox" bind:checked={showExpenseAttachment} /> <span>Show expense attachment</span></label>
-			</div>
-		</section>
-	{/if}
-
-	<section class="panel no-print">
-		<h3>Summary</h3>
-		<div class="grid">
-			<div class="card"><h4>Total Income</h4><p class="amount-value">{formatINR(report.total_income)}</p></div>
-			<div class="card"><h4>Total Expense</h4><p class="amount-value">{formatINR(report.total_expense)}</p></div>
-			<div class="card"><h4>Net</h4><p class="amount-value">{formatINR(report.net)}</p></div>
+	<div class="print-only letterhead">
+		<div>
+			<h1>{data.company.legal_name || data.company.name}</h1>
+			{#if data.company.address}<p>{data.company.address}</p>{/if}
+			<p>
+				{[data.company.tax_id ? `GSTIN/PAN: ${data.company.tax_id}` : '', data.company.phone, data.company.email].filter(Boolean).join(' · ')}
+			</p>
 		</div>
+		<div class="letterhead-meta">
+			<strong>{labelize(report.reportType)} report</strong>
+			<p>{formatDate(report.start)} – {formatDate(report.end)}</p>
+			<p>{filterSummary}</p>
+			<p>Generated {formatDate(todayIso())}</p>
+		</div>
+	</div>
+
+	<section class="kpi-grid summary">
+		<article class="kpi">
+			<span class="kpi-label"><span class="kpi-dot no-print" style="background: var(--series-income)"></span>Total income</span>
+			<span class="kpi-value">{formatINR(report.total_income)}</span>
+			<span class="kpi-foot">{report.reportType === 'expense' ? 'Not listed in this report' : plural(report.rows.income.length, 'entry', 'entries')}</span>
+		</article>
+		<article class="kpi">
+			<span class="kpi-label"><span class="kpi-dot no-print" style="background: var(--series-expense)"></span>Total expense</span>
+			<span class="kpi-value">{formatINR(report.total_expense)}</span>
+			<span class="kpi-foot">{report.reportType === 'income' ? 'Not listed in this report' : plural(report.rows.expenses.length, 'entry', 'entries')}</span>
+		</article>
+		<article class="kpi">
+			<span class="kpi-label">Net</span>
+			<span class="kpi-value" class:pos={report.net > 0} class:neg={report.net < 0}>{formatINR(report.net)}</span>
+			<span class="kpi-foot no-print">{formatDate(report.start)} – {formatDate(report.end)}</span>
+		</article>
 	</section>
 
-	{#if reportType !== 'expense'}
-		<section class="panel">
-			<h3>Income Rows</h3>
-			<p class="muted">Entity cumulative is calculated per entity in chronological order and stays the same regardless of display sort.</p>
-			<table>
-				<thead>
-					<tr>
-						<th class="date-col">Date</th>
-						<th>Entity</th>
-						{#if showIncomeProjects}<th>Projects</th>{/if}
-						{#if showIncomeType}<th>Type</th>{/if}
-						{#if showIncomeSource}<th>Source</th>{/if}
-						{#if showIncomeAttachment}<th>Attachment</th>{/if}
-						<th>Amount</th>
-						<th>Entity Cumulative</th>
-						<th>Comments</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#if report.rows.income.length === 0}
-						<tr><td colspan={5 + (showIncomeProjects ? 1 : 0) + (showIncomeType ? 1 : 0) + (showIncomeSource ? 1 : 0) + (showIncomeAttachment ? 1 : 0)} class="muted">No income rows.</td></tr>
-					{:else}
-						{#each report.rows.income as row}
-							<tr>
-								<td class="date-cell">{formatShortDate(row.date)}</td>
-								<td>{row.entity_name || '-'}</td>
-								{#if showIncomeProjects}<td>{row.project_names || '-'}</td>{/if}
-								{#if showIncomeType}<td>{row.payment_mode || '-'}</td>{/if}
-								{#if showIncomeSource}<td>{row.source || '-'}</td>{/if}
-								{#if showIncomeAttachment}<td>{row.master_owner || '-'}</td>{/if}
-								<td class="amount-cell">{formatINR(row.amount)}</td>
-								<td>{formatINR(row.entity_cumulative)}</td>
-								<td class="comments-cell">{row.comments || '-'}</td>
-							</tr>
-						{/each}
-					{/if}
-				</tbody>
-			</table>
-
-			<h4>Source-wise Cumulative Income</h4>
-			{#if incomeSourceCumulative.length === 0}
-				<p class="muted">No source-wise cumulative income to show.</p>
-			{:else}
-				<table>
+	{#each sections as section (section.side)}
+		<section class="card report-section">
+			<div class="card-header">
+				<div>
+					<h2>{section.title}</h2>
+					<p class="no-print">Entity cumulative is a running total per entity in date order, regardless of display order.</p>
+				</div>
+				<div class="chip-row no-print">
+					{#each COLUMN_DEFS as column}
+						<button type="button" class="toggle-chip" class:on={columns[section.side][column.key]} aria-pressed={columns[section.side][column.key]} on:click={() => toggleColumn(section.side, column.key)}>{column.label}</button>
+					{/each}
+				</div>
+			</div>
+			<div class="table-wrap">
+				<table class="table">
 					<thead>
 						<tr>
-							<th>Source</th>
-							<th>Cumulative Amount</th>
+							<th>Date</th>
+							<th>Entity</th>
+							{#if columns[section.side].projects}<th>Projects</th>{/if}
+							{#if columns[section.side].type}<th>Mode</th>{/if}
+							{#if columns[section.side].source}<th>Source</th>{/if}
+							{#if columns[section.side].head}<th>Master balance</th>{/if}
+							<th class="num">Amount</th>
+							<th class="num">Entity cumulative</th>
+							<th>Comments</th>
 						</tr>
 					</thead>
 					<tbody>
-						{#each incomeSourceCumulative as item}
+						{#each section.rows as row (row.id)}
 							<tr>
-								<td>{item.source}</td>
-								<td class="amount-cell">{formatINR(item.total)}</td>
+								<td class="nowrap">{formatShortDate(row.date)}</td>
+								<td class="primary">{row.entity_name || '—'}</td>
+								{#if columns[section.side].projects}<td>{row.project_names || '—'}</td>{/if}
+								{#if columns[section.side].type}<td>{labelize(row.payment_mode)}</td>{/if}
+								{#if columns[section.side].source}<td>{labelize(row.source)}</td>{/if}
+								{#if columns[section.side].head}<td>{row.head_name || row.master_owner}</td>{/if}
+								<td class="num amount">{formatINR(row.amount)}</td>
+								<td class="num muted">{formatINR(row.entity_cumulative)}</td>
+								<td class="comments">{row.comments || '—'}</td>
 							</tr>
+						{:else}
+							<tr><td colspan="9"><div class="empty"><h3>No {section.title.toLowerCase()} in this period</h3></div></td></tr>
 						{/each}
 					</tbody>
-				</table>
-			{/if}
-		</section>
-	{/if}
-
-	{#if reportType !== 'income'}
-		<section class="panel">
-			<h3>Expense Rows</h3>
-			<p class="muted">Entity cumulative is calculated per entity in chronological order and stays the same regardless of display sort.</p>
-			<table>
-				<thead>
-					<tr>
-						<th class="date-col">Date</th>
-						<th>Entity</th>
-						{#if showExpenseProjects}<th>Projects</th>{/if}
-						{#if showExpenseType}<th>Type</th>{/if}
-						{#if showExpenseSource}<th>Source</th>{/if}
-						{#if showExpenseAttachment}<th>Attachment</th>{/if}
-						<th>Amount</th>
-						<th>Entity Cumulative</th>
-						<th>Comments</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#if report.rows.expenses.length === 0}
-						<tr><td colspan={5 + (showExpenseProjects ? 1 : 0) + (showExpenseType ? 1 : 0) + (showExpenseSource ? 1 : 0) + (showExpenseAttachment ? 1 : 0)} class="muted">No expense rows.</td></tr>
-					{:else}
-						{#each report.rows.expenses as row}
+					{#if section.rows.length > 0}
+						<tfoot>
 							<tr>
-								<td class="date-cell">{formatShortDate(row.date)}</td>
-								<td>{row.entity_name || '-'}</td>
-								{#if showExpenseProjects}<td>{row.project_names || '-'}</td>{/if}
-								{#if showExpenseType}<td>{row.payment_mode || '-'}</td>{/if}
-								{#if showExpenseSource}<td>{row.source || '-'}</td>{/if}
-								{#if showExpenseAttachment}<td>{row.master_owner || '-'}</td>{/if}
-								<td class="amount-cell">{formatINR(row.amount)}</td>
-								<td>{formatINR(row.entity_cumulative)}</td>
-								<td class="comments-cell">{row.comments || '-'}</td>
+								<td colspan={2 + Object.values(columns[section.side]).filter(Boolean).length}>Total · {plural(section.rows.length, 'entry', 'entries')}</td>
+								<td class="num amount">{formatINR(section.total)}</td>
+								<td colspan="2"></td>
 							</tr>
-						{/each}
+						</tfoot>
 					{/if}
-				</tbody>
-			</table>
-
-			<h4>Source-wise Cumulative Expense</h4>
-			{#if expenseSourceCumulative.length === 0}
-				<p class="muted">No source-wise cumulative expense to show.</p>
-			{:else}
-				<table>
-					<thead>
-						<tr>
-							<th>Source</th>
-							<th>Cumulative Amount</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each expenseSourceCumulative as item}
-							<tr>
-								<td>{item.source}</td>
-								<td class="amount-cell">{formatINR(item.total)}</td>
-							</tr>
-						{/each}
-					</tbody>
 				</table>
+			</div>
+
+			{#if section.sources.length > 0}
+				<div class="sources">
+					<h3>By source</h3>
+					<table class="table compact">
+						<thead><tr><th>Source</th><th class="share-col">Share</th><th class="num">Amount</th></tr></thead>
+						<tbody>
+							{#each section.sources as item}
+								<tr>
+									<td class="primary">{labelize(item.source)}</td>
+									<td class="share-col">
+										<span class="share">
+											<span class="bar"><span style="width: {Math.max(2, item.share * 100)}%; background: var(--series-{section.side})"></span></span>
+											<span class="num muted">{(item.share * 100).toFixed(1)}%</span>
+										</span>
+									</td>
+									<td class="num amount">{formatINR(item.total)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
 			{/if}
 		</section>
-	{/if}
+	{/each}
 {/if}
 
 <style>
-	.panel { background: var(--panel-bg); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); margin-bottom: 20px; }
-	.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
-	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-	.action-row { display: flex; gap: 10px; flex-wrap: wrap; }
-	.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
-	label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
-	label.wide { grid-column: 1 / -1; }
-	label.multi-option { display: flex; align-items: center; gap: 8px; color: var(--text); }
-	input, select, button { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
-	button { background: var(--primary-bg); color: var(--primary-text); border: none; cursor: pointer; }
-	.multi-select { display: grid; gap: 6px; }
-	.multi-trigger { width: 100%; text-align: left; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
-	.multi-menu { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 8px; max-height: 280px; overflow: auto; display: grid; gap: 6px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08); }
-	.detail-toggles { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px; }
-	.detail-toggles label { display: flex; align-items: center; gap: 6px; }
-	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-	th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px; vertical-align: top; }
-	.date-col, .date-cell { white-space: nowrap; }
-	.amount-cell { font-weight: 700; }
-	.comments-cell { font-size: 0.9em; }
-	.muted { color: var(--muted); }
-
-	button.secondary { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
+	.run {
+		align-content: end;
+	}
+	.run .btn {
+		height: 38px;
+	}
+	.segmented {
+		width: 100%;
+	}
+	.segmented button {
+		flex: 1;
+	}
+	.nowrap {
+		white-space: nowrap;
+	}
+	.comments {
+		color: var(--muted);
+		min-width: 200px;
+	}
+	.sources {
+		padding: 16px 20px 20px;
+		border-top: 1px solid var(--border);
+	}
+	.sources h3 {
+		margin-bottom: 8px;
+	}
+	.share-col {
+		width: 40%;
+	}
+	.share {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+	.bar {
+		flex: 1;
+		height: 8px;
+		border-radius: 4px;
+		background: var(--surface-3);
+		overflow: hidden;
+	}
+	.bar span {
+		display: block;
+		height: 100%;
+		border-radius: 4px;
+	}
+	.print-only {
+		display: none;
+	}
 
 	@page {
 		size: A4 portrait;
 		margin: 12mm;
 	}
-
 	@media print {
-		:global(body) {
-			font-size: 14pt;
-			line-height: 1.4;
-			background: #fff;
-			color: #000;
+		.print-only {
+			display: flex;
 		}
-
-		.no-print {
-			display: none !important;
+		.letterhead {
+			justify-content: space-between;
+			gap: 16px;
+			padding-bottom: 4mm;
+			margin-bottom: 4mm;
+			border-bottom: 0.4mm solid #000;
+			font-size: 10pt;
 		}
-
-		.panel {
-			background: #fff;
+		.letterhead h1 {
+			font-size: 16pt;
+		}
+		.letterhead-meta {
+			text-align: right;
+		}
+		.summary {
+			grid-template-columns: repeat(3, 1fr);
+			gap: 3mm;
+		}
+		.summary .kpi {
 			box-shadow: none;
-			border-radius: 0;
-			padding: 0;
-			margin: 0 0 8mm;
-			break-inside: avoid-page;
+			border: 0.3mm solid #999;
+			border-radius: 2mm;
+			padding: 2.5mm 3mm;
 		}
-
-		h3 {
-			font-size: 18pt;
-			margin: 0 0 3mm;
-		}
-
-		h4 {
-			font-size: 15pt;
-			margin: 4mm 0 2mm;
-		}
-
-		table {
-			margin-top: 0;
+		.summary .kpi-value {
 			font-size: 13pt;
 		}
-
-		th, td {
-			padding: 2.5mm 2mm;
-			border-bottom: 0.35mm solid #999;
+		.card {
+			box-shadow: none;
+			border: 0;
+			border-radius: 0;
+			margin-bottom: 6mm;
 		}
-
+		.card-header {
+			padding: 0 0 2mm;
+			border-bottom: 0;
+		}
+		.table th {
+			position: static;
+			background: none;
+			color: #000;
+			border-bottom: 0.35mm solid #000;
+			padding: 1.5mm 2mm;
+		}
+		.table td {
+			padding: 1.5mm 2mm;
+			border-bottom: 0.2mm solid #bbb;
+			color: #000;
+		}
+		.table tfoot td {
+			background: none;
+			border-top: 0.35mm solid #000;
+		}
+		.table-wrap {
+			overflow: visible;
+		}
 		tr {
 			break-inside: avoid;
 		}
-
-		.amount-cell {
-			font-weight: 800;
+		.sources {
+			padding: 3mm 0 0;
+			border: 0;
+		}
+		.bar {
+			border: 0.2mm solid #999;
+			print-color-adjust: exact;
+			-webkit-print-color-adjust: exact;
 		}
 	}
 </style>

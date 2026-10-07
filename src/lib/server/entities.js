@@ -1,30 +1,10 @@
 // @ts-nocheck
 import db from '$lib/server/db.js';
+import { normalizeIdList, ownsAll } from '$lib/server/company.js';
 
-export const normalizeProjectIds = (value) => {
-	if (!Array.isArray(value)) return [];
+export const normalizeProjectIds = (value) => normalizeIdList(Array.isArray(value) ? value : []);
 
-	const uniqueIds = new Set();
-	for (const item of value) {
-		const id = Number(item);
-		if (Number.isInteger(id) && id > 0) {
-			uniqueIds.add(id);
-		}
-	}
-
-	return Array.from(uniqueIds);
-};
-
-export const validateProjectIds = (projectIds) => {
-	if (projectIds.length === 0) return true;
-
-	const placeholders = projectIds.map(() => '?').join(', ');
-	const rows = db
-		.prepare(`SELECT id FROM projects WHERE id IN (${placeholders})`)
-		.all(...projectIds);
-
-	return rows.length === projectIds.length;
-};
+export const validateProjectIds = (projectIds, companyId) => ownsAll('projects', projectIds, companyId);
 
 export const replaceEntityProjects = (entityId, projectIds) => {
 	db.prepare('DELETE FROM entity_projects WHERE entity_id = ?').run(entityId);
@@ -72,13 +52,22 @@ const hydrateEntities = (rows) => {
 	});
 };
 
-export const listEntities = () => {
-	const rows = db.prepare('SELECT * FROM entities ORDER BY name ASC').all();
+export const listEntities = (companyId) => {
+	const rows = db
+		.prepare(
+			`SELECT e.*,
+				(SELECT COUNT(*) FROM income i WHERE i.entity_id = e.id) +
+				(SELECT COUNT(*) FROM expenses x WHERE x.entity_id = e.id) AS transaction_count
+			 FROM entities e
+			 WHERE e.company_id = ?
+			 ORDER BY e.name COLLATE NOCASE ASC`
+		)
+		.all(companyId);
 	return hydrateEntities(rows);
 };
 
-export const getEntityById = (id) => {
-	const row = db.prepare('SELECT * FROM entities WHERE id = ?').get(id);
+export const getEntityById = (id, companyId) => {
+	const row = db.prepare('SELECT * FROM entities WHERE id = ? AND company_id = ?').get(id, companyId);
 	if (!row) return null;
 	return hydrateEntities([row])[0] || null;
 };

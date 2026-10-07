@@ -1,9 +1,30 @@
-export const BANKS = ['PNB', 'SBI', 'AU', 'HDFC', 'Axis', 'Union'];
+// Suggestions only: any bank name can be typed in.
+export const BANK_SUGGESTIONS = [
+	'SBI',
+	'PNB',
+	'HDFC',
+	'ICICI',
+	'Axis',
+	'Kotak',
+	'Bank of Baroda',
+	'Canara',
+	'Union',
+	'AU',
+	'IDFC First',
+	'IndusInd',
+	'Yes Bank',
+	'Bank of India',
+	'Indian Bank',
+	'Federal'
+];
 
-export const MASTER_OWNERS = [
-	{ key: 'SHREE', label: 'Master Balance (Shree)' },
-	{ key: 'PKB', label: 'Master Balance (PKB) - Praveen Bhatt' },
-	{ key: 'HKJ', label: 'Master Balance (HKJ) - Hemant Joshi' }
+export const COMPANY_COLORS = ['#2563eb', '#0f766e', '#7c3aed', '#b45309', '#be123c', '#0369a1', '#4d7c0f', '#475569'];
+
+export const PAYOUT_TYPES = [
+	{ value: 'monthly', label: 'Monthly' },
+	{ value: 'quarterly', label: 'Quarterly' },
+	{ value: 'half-yearly', label: 'Half yearly' },
+	{ value: 'annually', label: 'Annually' }
 ];
 
 export const PROPERTY_TYPES = ['land', 'house', 'housing-project', 'plotting-project'];
@@ -35,15 +56,6 @@ export const ENTITY_TYPES = [
 	'broker',
 	'owner'
 ];
-
-export const PROJECTS = {
-	BGC: 'Balaji Green City',
-	BPD: 'Balaji Paradise',
-	BBB: 'Bahubali Bungalows',
-	POB: 'Post Office Building',
-	AHP: 'Ahinsapuri',
-	OTH: 'Other'
-};
 
 export const PAYMENT_MODES = ['cash', 'account'];
 

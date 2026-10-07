@@ -23,17 +23,17 @@ const normalizeTextList = (items) =>
 
 const mergeLists = (defaults, customs) => normalizeTextList([...(defaults || []), ...(customs || [])]);
 
-export const getMasterOptions = () => {
-	const row = db
-		.prepare(
-			`SELECT
-				custom_expense_sources_json,
-				custom_credit_sources_json,
-				custom_entity_types_json,
-				custom_property_types_json
-			 FROM settings WHERE id = 1`
-		)
-		.get();
+export const ensureCompanySettings = (companyId) => {
+	db.prepare('INSERT OR IGNORE INTO company_settings (company_id) VALUES (?)').run(companyId);
+};
+
+export const getCompanySettingsRow = (companyId) => {
+	ensureCompanySettings(companyId);
+	return db.prepare('SELECT * FROM company_settings WHERE company_id = ?').get(companyId);
+};
+
+export const getMasterOptions = (companyId) => {
+	const row = getCompanySettingsRow(companyId);
 
 	const customExpenseSources = parseArray(row?.custom_expense_sources_json);
 	const customCreditSources = parseArray(row?.custom_credit_sources_json);
@@ -52,27 +52,27 @@ export const getMasterOptions = () => {
 	};
 };
 
-export const setCustomMasterOptions = ({
-	custom_expense_sources,
-	custom_credit_sources,
-	custom_entity_types,
-	custom_property_types
-}) => {
+export const setCustomMasterOptions = (
+	companyId,
+	{ custom_expense_sources, custom_credit_sources, custom_entity_types, custom_property_types }
+) => {
+	ensureCompanySettings(companyId);
 	db.prepare(
-		`UPDATE settings
+		`UPDATE company_settings
 		 SET custom_expense_sources_json = ?,
 			 custom_credit_sources_json = ?,
 			 custom_entity_types_json = ?,
 			 custom_property_types_json = ?
-		 WHERE id = 1`
+		 WHERE company_id = ?`
 	).run(
 		JSON.stringify(normalizeTextList(custom_expense_sources)),
 		JSON.stringify(normalizeTextList(custom_credit_sources)),
 		JSON.stringify(normalizeTextList(custom_entity_types)),
-		JSON.stringify(normalizeTextList(custom_property_types))
+		JSON.stringify(normalizeTextList(custom_property_types)),
+		companyId
 	);
 
-	return getMasterOptions();
+	return getMasterOptions(companyId);
 };
 
 export const getEntityCode = (entityType) => {

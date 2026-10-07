@@ -1,6 +1,8 @@
 // @ts-nocheck
 import db from '$lib/server/db.js';
 import { json } from '@sveltejs/kit';
+import { readJson, requireCompanyId } from '$lib/server/company.js';
+import { getCompanySettingsRow } from '$lib/server/master-options.js';
 
 const parseJson = (value, fallback) => {
 	if (!value) return fallback;
@@ -21,27 +23,28 @@ const normalizeItems = (items) =>
 				.filter((item) => item.text.length > 0)
 		: [];
 
-export const GET = () => {
-	const row = db.prepare('SELECT todos_json, coming_income_json, coming_expenses_json FROM settings WHERE id = 1').get();
-	const todos = parseJson(row?.todos_json, []);
-	const comingIncome = parseJson(row?.coming_income_json, []);
-	const comingExpenses = parseJson(row?.coming_expenses_json, []);
+export const GET = ({ locals }) => {
+	const row = getCompanySettingsRow(requireCompanyId(locals));
 	return json({
-		todos: normalizeItems(todos),
-		coming_income: normalizeItems(comingIncome),
-		coming_expenses: normalizeItems(comingExpenses)
+		todos: normalizeItems(parseJson(row?.todos_json, [])),
+		coming_income: normalizeItems(parseJson(row?.coming_income_json, [])),
+		coming_expenses: normalizeItems(parseJson(row?.coming_expenses_json, []))
 	});
 };
 
-export const PUT = async ({ request }) => {
-	const { todos, coming_income, coming_expenses } = await request.json();
-	const normalizedTodos = normalizeItems(todos);
-	const normalizedIncome = normalizeItems(coming_income);
-	const normalizedExpenses = normalizeItems(coming_expenses);
+export const PUT = async ({ request, locals }) => {
+	const companyId = requireCompanyId(locals);
+	getCompanySettingsRow(companyId);
+	const { todos, coming_income, coming_expenses } = await readJson(request);
 
 	db.prepare(
-		'UPDATE settings SET todos_json = ?, coming_income_json = ?, coming_expenses_json = ? WHERE id = 1'
-	).run(JSON.stringify(normalizedTodos), JSON.stringify(normalizedIncome), JSON.stringify(normalizedExpenses));
+		'UPDATE company_settings SET todos_json = ?, coming_income_json = ?, coming_expenses_json = ? WHERE company_id = ?'
+	).run(
+		JSON.stringify(normalizeItems(todos)),
+		JSON.stringify(normalizeItems(coming_income)),
+		JSON.stringify(normalizeItems(coming_expenses)),
+		companyId
+	);
 
 	return json({ success: true });
 };

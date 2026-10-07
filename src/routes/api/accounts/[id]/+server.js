@@ -1,50 +1,39 @@
+// @ts-nocheck
 import db from '$lib/server/db.js';
-import { BANKS } from '$lib/constants.js';
-import { json } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
+import { parseId, readJson, requireCompanyId, text } from '$lib/server/company.js';
 
-export const PUT = async ({ params, request }) => {
-	const id = Number(params.id);
-	if (!Number.isInteger(id)) return json({ error: 'Invalid id.' }, { status: 400 });
+export const PUT = async ({ params, request, locals }) => {
+	const companyId = requireCompanyId(locals);
+	const id = parseId(params.id) ?? error(400, 'Invalid id.');
+	const body = await readJson(request);
+	const bank_name = text(body.bank_name);
+	const account_holder = text(body.account_holder);
 
-	const body = await request.json();
-	const bank_name = String(body.bank_name || '').trim();
-	const account_number = String(body.account_number || '').trim();
-	const account_holder = String(body.account_holder || '').trim();
-	const comments = String(body.comments || '').trim();
-	const allow_balance_edit = Boolean(body.allow_balance_edit);
+	if (!bank_name) error(400, 'Bank name is required.');
+	if (!account_holder) error(400, 'Account holder is required.');
 
-	if (!bank_name || !BANKS.includes(bank_name)) {
-		return json({ error: 'Valid bank is required.' }, { status: 400 });
-	}
-	if (!account_holder) {
-		return json({ error: 'Account holder is required.' }, { status: 400 });
-	}
-	const existing = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
-	if (!existing) return json({ error: 'Account not found.' }, { status: 404 });
+	const existing = db.prepare('SELECT * FROM accounts WHERE id = ? AND company_id = ?').get(id, companyId);
+	if (!existing) error(404, 'Account not found.');
 
+	// The balance moves with transactions; overriding it is an explicit opt-in.
 	let account_balance = Number(existing.account_balance || 0);
-	if (allow_balance_edit) {
+	if (body.allow_balance_edit) {
 		account_balance = Number(body.account_balance);
-		if (!Number.isFinite(account_balance)) {
-			return json({ error: 'Account balance must be numeric.' }, { status: 400 });
-		}
+		if (!Number.isFinite(account_balance)) error(400, 'Account balance must be numeric.');
 	}
 
-	const result = db
-		.prepare(
-			'UPDATE accounts SET bank_name = ?, account_number = ?, account_holder = ?, account_balance = ?, comments = ? WHERE id = ?'
-		)
-		.run(bank_name, account_number, account_holder, account_balance, comments || null, id);
+	db.prepare(
+		'UPDATE accounts SET bank_name = ?, account_number = ?, account_holder = ?, account_balance = ?, comments = ? WHERE id = ? AND company_id = ?'
+	).run(bank_name, text(body.account_number), account_holder, account_balance, text(body.comments) || null, id, companyId);
 
-	if (result.changes === 0) return json({ error: 'Account not found.' }, { status: 404 });
 	return json(db.prepare('SELECT * FROM accounts WHERE id = ?').get(id));
 };
 
-export const DELETE = ({ params }) => {
-	const id = Number(params.id);
-	if (!Number.isInteger(id)) return json({ error: 'Invalid id.' }, { status: 400 });
-
-	const result = db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
-	if (result.changes === 0) return json({ error: 'Account not found.' }, { status: 404 });
+export const DELETE = ({ params, locals }) => {
+	const companyId = requireCompanyId(locals);
+	const id = parseId(params.id) ?? error(400, 'Invalid id.');
+	const result = db.prepare('DELETE FROM accounts WHERE id = ? AND company_id = ?').run(id, companyId);
+	if (result.changes === 0) error(404, 'Account not found.');
 	return json({ success: true });
 };

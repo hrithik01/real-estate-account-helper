@@ -1,409 +1,319 @@
 <script>
 	// @ts-nocheck
 	import { onMount } from 'svelte';
+	import { api, storage } from '$lib/api.js';
+	import { formatCompact, formatDate, formatINR, labelize, todayIso, plural } from '$lib/format.js';
+	import { toast } from '$lib/toast.js';
+	import Icon from '$lib/components/Icon.svelte';
+	import TrendChart from '$lib/components/TrendChart.svelte';
+	import BoardList from '$lib/components/BoardList.svelte';
 
-	const today = new Date().toISOString().slice(0, 10);
-	let selectedDate = today;
-	let summary = { total_income: 0, total_expense: 0, net: 0, total_account_balance: 0 };
-	let accounts = [];
-	let showAccountBalances = false;
-	let masters = {
-		master_shree_balance: 0,
-		master_pkb_balance: 0,
-		master_hkj_balance: 0
-	};
-	let todos = [];
-	let comingIncome = [];
-	let comingExpenses = [];
-	let newTodo = '';
-	let newComingIncome = '';
-	let newComingExpense = '';
-	let message = '';
+	export let data;
 
-	const formatINR = (value) =>
-		new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value || 0);
+	let selectedDate = todayIso();
+	let dash = null;
+	let loading = true;
+	let boards = { todos: [], coming_income: [], coming_expenses: [] };
+	let showAccounts = storage.get('ledger-show-accounts') === '1';
 
-	const loadSummary = async () => {
-		const res = await fetch(`/api/summary?date=${selectedDate}`);
-		if (res.ok) summary = await res.json();
-	};
+	$: longDate = new Date(`${selectedDate}T00:00:00`).toLocaleDateString('en-IN', {
+		weekday: 'long',
+		day: 'numeric',
+		month: 'long',
+		year: 'numeric'
+	});
+	$: isToday = selectedDate === todayIso();
 
-	const loadMasters = async () => {
-		const res = await fetch('/api/master-balances');
-		if (res.ok) masters = await res.json();
-	};
-
-	const loadAccounts = async () => {
-		const res = await fetch('/api/accounts');
-		if (res.ok) accounts = await res.json();
+	const loadDashboard = async () => {
+		loading = true;
+		try {
+			dash = await api(`/api/dashboard?date=${selectedDate}`);
+		} catch (err) {
+			toast.error(err.message);
+		} finally {
+			loading = false;
+		}
 	};
 
 	const loadBoards = async () => {
-		const res = await fetch('/api/boards');
-		if (res.ok) {
-			const data = await res.json();
-			todos = data.todos || [];
-			comingIncome = data.coming_income || [];
-			comingExpenses = data.coming_expenses || [];
+		try {
+			boards = await api('/api/boards');
+		} catch (err) {
+			toast.error(err.message);
 		}
 	};
 
-	const saveBoards = async () => {
-		message = '';
-		const res = await fetch('/api/boards', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				todos,
-				coming_income: comingIncome,
-				coming_expenses: comingExpenses
-			})
-		});
-		if (res.ok) {
-			message = 'Daily boards updated.';
-		} else {
-			message = 'Failed to save boards.';
+	const saveBoard = async (key, items) => {
+		const previous = boards;
+		boards = { ...boards, [key]: items };
+		try {
+			await api('/api/boards', { method: 'PUT', body: boards });
+		} catch (err) {
+			boards = previous;
+			toast.error(err.message);
 		}
 	};
 
-	const addItem = async (kind) => {
-		if (kind === 'todo') {
-			const text = newTodo.trim();
-			if (!text) return;
-			todos = [...todos, { text, done: false }];
-			newTodo = '';
-		}
-		if (kind === 'income') {
-			const text = newComingIncome.trim();
-			if (!text) return;
-			comingIncome = [...comingIncome, { text, done: false }];
-			newComingIncome = '';
-		}
-		if (kind === 'expense') {
-			const text = newComingExpense.trim();
-			if (!text) return;
-			comingExpenses = [...comingExpenses, { text, done: false }];
-			newComingExpense = '';
-		}
-		await saveBoards();
+	const toggleAccounts = () => {
+		showAccounts = !showAccounts;
+		storage.set('ledger-show-accounts', showAccounts ? '1' : '');
 	};
 
-	const toggleDone = async (kind, index) => {
-		const list = kind === 'todo' ? todos : kind === 'income' ? comingIncome : comingExpenses;
-		const updated = list.map((item, i) => (i === index ? { ...item, done: !item.done } : item));
-		if (kind === 'todo') todos = updated;
-		if (kind === 'income') comingIncome = updated;
-		if (kind === 'expense') comingExpenses = updated;
-		await saveBoards();
-	};
-
-	const removeItem = async (kind, index) => {
-		if (kind === 'todo') todos = todos.filter((_, i) => i !== index);
-		if (kind === 'income') comingIncome = comingIncome.filter((_, i) => i !== index);
-		if (kind === 'expense') comingExpenses = comingExpenses.filter((_, i) => i !== index);
-		await saveBoards();
-	};
-
-	onMount(async () => {
-		await loadSummary();
-		await loadMasters();
-		await loadAccounts();
-		await loadBoards();
+	onMount(() => {
+		loadDashboard();
+		loadBoards();
 	});
 </script>
 
-<section class="hero-panel">
+<header class="page-header">
 	<div>
-		<p class="eyebrow">Balaji Daily Ledger</p>
-		<h2>Daily Overview</h2>
-		<p class="muted hero-copy">Track balances, review active accounts, and keep pending work visible without leaving the dashboard.</p>
+		<p class="eyebrow">{longDate}</p>
+		<h1>{data.company.name}</h1>
+		<p>Daily position, balances and what's coming up.</p>
 	</div>
-	<div class="hero-actions">
-		<label class="date-chip">
-			<span>Working Date</span>
-			<input type="date" bind:value={selectedDate} on:change={loadSummary} />
+	<div class="page-actions">
+		<label class="date-field">
+			<Icon name="calendar" size={15} />
+			<span class="sr-only">Working date</span>
+			<input type="date" bind:value={selectedDate} on:change={loadDashboard} />
 		</label>
-		<a class="primary-button" href="/income">Add Income</a>
-		<a class="secondary-button" href="/expenses">Add Expense</a>
+		{#if !isToday}
+			<button class="btn" type="button" on:click={() => ((selectedDate = todayIso()), loadDashboard())}>Today</button>
+		{/if}
+		<a class="btn" href="/expenses"><Icon name="expense" size={15} /> Add expense</a>
+		<a class="btn btn-primary" href="/income"><Icon name="income" size={15} /> Add income</a>
 	</div>
+</header>
+
+<section class="kpi-grid">
+	<article class="kpi">
+		<span class="kpi-label"><span class="kpi-dot" style="background: var(--series-income)"></span>Income · {isToday ? 'today' : 'this day'}</span>
+		<span class="kpi-value" class:skeleton={loading}>{formatINR(dash?.day.income)}</span>
+		<span class="kpi-foot">This month {formatCompact(dash?.month.income)}</span>
+	</article>
+	<article class="kpi">
+		<span class="kpi-label"><span class="kpi-dot" style="background: var(--series-expense)"></span>Expense · {isToday ? 'today' : 'this day'}</span>
+		<span class="kpi-value" class:skeleton={loading}>{formatINR(dash?.day.expense)}</span>
+		<span class="kpi-foot">This month {formatCompact(dash?.month.expense)}</span>
+	</article>
+	<article class="kpi">
+		<span class="kpi-label">Net position</span>
+		<span class="kpi-value" class:skeleton={loading} class:pos={dash?.day.net > 0} class:neg={dash?.day.net < 0}>{formatINR(dash?.day.net)}</span>
+		<span class="kpi-foot">This month <span class:pos={dash?.month.net > 0} class:neg={dash?.month.net < 0}>{formatCompact(dash?.month.net)}</span></span>
+	</article>
+	<article class="kpi">
+		<span class="kpi-label"><Icon name="bank" size={14} /> Bank balance</span>
+		<span class="kpi-value" class:skeleton={loading}>{formatINR(dash?.total_account_balance)}</span>
+		<span class="kpi-foot">Across {plural(dash?.accounts.length ?? 0, 'account')}</span>
+	</article>
 </section>
 
-<section class="stats-grid">
-	<article class="stat-card">
-		<span>Total Income</span>
-		<strong>{formatINR(summary.total_income)}</strong>
-		<small>Recorded credits for the selected day</small>
-	</article>
-	<article class="stat-card">
-		<span>Total Expense</span>
-		<strong>{formatINR(summary.total_expense)}</strong>
-		<small>Recorded debits for the selected day</small>
-	</article>
-	<article class="stat-card">
-		<span>Net Position</span>
-		<strong>{formatINR(summary.net)}</strong>
-		<small>Daily spread between inflow and outflow</small>
-	</article>
-	<article class="stat-card">
-		<span>Accounts Balance</span>
-		<strong>{formatINR(summary.total_account_balance)}</strong>
-		<small>Total balance across tracked bank accounts</small>
-	</article>
-</section>
-
-<section class="panel">
-	<div class="section-header">
-		<div>
-			<h2>Balances Snapshot</h2>
-			<p class="muted">Review master balances and optionally expand individual accounts.</p>
-		</div>
-		<div class="pill-note">INR ledger</div>
-	</div>
-
-	<div class="grid compact-grid">
-		<div class="card balance-card">
-			<h3>Master Balance (Shree)</h3>
-			<p class="amount-value">{formatINR(masters.master_shree_balance)}</p>
-			<small>Primary running balance</small>
-		</div>
-		<div class="card balance-card">
-			<h3>Master Balance (PKB)</h3>
-			<p class="amount-value">{formatINR(masters.master_pkb_balance)}</p>
-			<small>Owner: Praveen Bhatt</small>
-		</div>
-		<div class="card balance-card">
-			<h3>Master Balance (HKJ)</h3>
-			<p class="amount-value">{formatINR(masters.master_hkj_balance)}</p>
-			<small>Owner: Hemant Joshi</small>
-		</div>
-		<div class="card balance-card accent-card">
-			<h3>Combined Account Balance</h3>
-			<p class="amount-value">{formatINR(summary.total_account_balance)}</p>
-			<small>Sum of all tracked bank accounts</small>
-		</div>
-	</div>
-
-	<label class="toggle-row toggle-card">
-		<input type="checkbox" bind:checked={showAccountBalances} />
-		<span>Show individual account balances</span>
-	</label>
-
-	{#if showAccountBalances}
-		<div class="grid account-grid">
-			{#if accounts.length === 0}
-				<div class="card balance-card empty-card">
-					<h3>No accounts found</h3>
-					<p class="muted">Add accounts from Masters to see balances here.</p>
-				</div>
-			{:else}
-				{#each accounts as account}
-					<div class="card balance-card account-card">
-						<div class="account-header">
-							<div>
-								<h3>{account.account_holder}</h3>
-								<small>{account.bank_name}</small>
-							</div>
-							<div class="pill-note">Account</div>
-						</div>
-						<p class="amount-value">{formatINR(account.account_balance)}</p>
-					</div>
-				{/each}
-			{/if}
-		</div>
-	{/if}
-</section>
-
-<div class="board-grid">
-	<section class="panel board-panel">
-		<div class="section-header">
+<div class="split">
+	<section class="card">
+		<div class="card-header">
 			<div>
-				<h2>To-Dos</h2>
-				<p class="muted">Daily action list for the team.</p>
+				<h2>Cash flow</h2>
+				<p>Income and expense over the last six months</p>
 			</div>
-			<div class="pill-note">Checklist</div>
+			<a class="btn btn-sm" href="/reports">Open reports</a>
 		</div>
-		<div class="board-input">
-			<input type="text" placeholder="Add task" bind:value={newTodo} />
-			<button class="secondary" on:click={() => addItem('todo')}>Add</button>
-		</div>
-		<ul class="board-list">
-			{#if todos.length === 0}
-				<li class="board-empty">
-					<p class="muted">No to-dos yet.</p>
-				</li>
+		<div class="card-body">
+			{#if dash}
+				<TrendChart data={dash.trend} />
 			{:else}
-				{#each todos as item, index}
-					<li class="board-row">
-						<label class="line">
-							<input type="checkbox" checked={item.done} on:change={() => toggleDone('todo', index)} />
-							<span class:done={item.done}>{item.text}</span>
-						</label>
-						<button class="ghost" on:click={() => removeItem('todo', index)}>Remove</button>
-					</li>
-				{/each}
+				<div class="skeleton" style="height: 250px"></div>
 			{/if}
-		</ul>
+		</div>
 	</section>
 
-	<section class="panel board-panel">
-		<div class="section-header">
+	<section class="card">
+		<div class="card-header">
 			<div>
-				<h2>Coming Income</h2>
-				<p class="muted">Notes for expected incoming amounts.</p>
+				<h2>Master balances</h2>
+				<p>Opening balance plus attached entries</p>
 			</div>
-			<div class="pill-note">Pipeline</div>
+			<a class="btn btn-sm btn-ghost" href="/masters?tab=balances" aria-label="Manage master balances"><Icon name="settings" size={14} /></a>
 		</div>
-		<div class="board-input">
-			<input type="text" placeholder="Add coming income note" bind:value={newComingIncome} />
-			<button class="secondary" on:click={() => addItem('income')}>Add</button>
-		</div>
-		<ul class="board-list">
-			{#if comingIncome.length === 0}
-				<li class="board-empty">
-					<p class="muted">No planned income.</p>
+		<ul class="list">
+			{#each dash?.heads || [] as head}
+				<li>
+					<span class="head-code">{head.code}</span>
+					<span class="grow">
+						<strong>{head.name}</strong>
+						<span class="cell-sub">{plural(head.usage_count, 'entry', 'entries')}</span>
+					</span>
+					<span class="amount" class:neg={head.balance < 0}>{formatINR(head.balance)}</span>
 				</li>
-			{:else}
-				{#each comingIncome as item, index}
-					<li class="board-row">
-						<label class="line">
-							<input type="checkbox" checked={item.done} on:change={() => toggleDone('income', index)} />
-							<span class:done={item.done}>{item.text}</span>
-						</label>
-						<button class="ghost" on:click={() => removeItem('income', index)}>Remove</button>
-					</li>
-				{/each}
-			{/if}
+			{/each}
 		</ul>
 	</section>
+</div>
 
-	<section class="panel board-panel">
-		<div class="section-header">
+<div class="split">
+	<section class="card">
+		<div class="card-header">
 			<div>
-				<h2>Coming Expenses</h2>
-				<p class="muted">Track planned payouts before they hit the ledger.</p>
+				<h2>Recent activity</h2>
+				<p>Latest entries recorded</p>
 			</div>
-			<div class="pill-note">Outflow</div>
 		</div>
-		<div class="board-input">
-			<input type="text" placeholder="Add coming expense note" bind:value={newComingExpense} />
-			<button class="secondary" on:click={() => addItem('expense')}>Add</button>
-		</div>
-		<ul class="board-list">
-			{#if comingExpenses.length === 0}
-				<li class="board-empty">
-					<p class="muted">No planned expenses.</p>
-				</li>
-			{:else}
-				{#each comingExpenses as item, index}
-					<li class="board-row">
-						<label class="line">
-							<input type="checkbox" checked={item.done} on:change={() => toggleDone('expense', index)} />
-							<span class:done={item.done}>{item.text}</span>
-						</label>
-						<button class="ghost" on:click={() => removeItem('expense', index)}>Remove</button>
+		{#if dash && dash.recent.length === 0}
+			<div class="empty">
+				<span class="empty-icon"><Icon name="list" size={20} /></span>
+				<h3>No entries yet</h3>
+				<p>Record your first income or expense to see it here.</p>
+			</div>
+		{:else}
+			<ul class="list">
+				{#each dash?.recent || [] as row}
+					<li>
+						<span class="kind {row.kind}"><Icon name={row.kind === 'income' ? 'arrowDownRight' : 'arrowUpRight'} size={14} /></span>
+						<span class="grow">
+							<strong>{row.entity_name || 'Unassigned'}</strong>
+							<span class="cell-sub">{labelize(row.source)} · {formatDate(row.date)}</span>
+						</span>
+						<span class="amount" class:pos={row.kind === 'income'}>{row.kind === 'income' ? '+' : '−'}{formatINR(row.amount)}</span>
 					</li>
 				{/each}
-			{/if}
-		</ul>
+			</ul>
+		{/if}
+	</section>
 
-		{#if message}
-			<p class="muted board-message">{message}</p>
+	<section class="card">
+		<div class="card-header">
+			<div>
+				<h2>Bank accounts</h2>
+				<p>{formatINR(dash?.total_account_balance)} in total</p>
+			</div>
+			<button class="btn btn-sm" type="button" on:click={toggleAccounts}>{showAccounts ? 'Hide' : 'Show'} balances</button>
+		</div>
+		{#if dash && dash.accounts.length === 0}
+			<div class="empty">
+				<span class="empty-icon"><Icon name="bank" size={20} /></span>
+				<p>No accounts yet. <a href="/masters?tab=accounts">Add one in Masters</a>.</p>
+			</div>
+		{:else}
+			<ul class="list">
+				{#each dash?.accounts || [] as account}
+					<li>
+						<span class="head-code"><Icon name="bank" size={14} /></span>
+						<span class="grow">
+							<strong>{account.account_holder}</strong>
+							<span class="cell-sub">{account.bank_name}{account.account_number ? ` · ${account.account_number}` : ''}</span>
+						</span>
+						<span class="amount" class:neg={showAccounts && account.account_balance < 0}>{showAccounts ? formatINR(account.account_balance) : '••••••'}</span>
+					</li>
+				{/each}
+			</ul>
 		{/if}
 	</section>
 </div>
 
+<div class="boards">
+	<BoardList title="To-dos" subtitle="Daily action list" icon="clipboard" placeholder="Add a task" emptyText="No to-dos yet." items={boards.todos} on:change={(event) => saveBoard('todos', event.detail)} />
+	<BoardList title="Coming income" subtitle="Expected inflows" icon="income" placeholder="Add expected income" emptyText="No planned income." items={boards.coming_income} on:change={(event) => saveBoard('coming_income', event.detail)} />
+	<BoardList title="Coming expenses" subtitle="Planned payouts" icon="expense" placeholder="Add planned expense" emptyText="No planned expenses." items={boards.coming_expenses} on:change={(event) => saveBoard('coming_expenses', event.detail)} />
+</div>
+
 <style>
-	.hero-copy {
-		max-width: 38rem;
-	}
-
-	.eyebrow {
-		margin: 0 0 0.4rem;
-		font-size: 0.78rem;
-		font-weight: 800;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--accent);
-	}
-
-	.date-chip {
-		min-width: 13.5rem;
-	}
-
-	.compact-grid,
-	.account-grid {
-		margin-top: 1rem;
-	}
-
-	.balance-card {
-		display: grid;
-		gap: 0.45rem;
-	}
-
-	.balance-card small {
+	.date-field {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		height: 36px;
+		padding: 0 10px;
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius);
+		background: var(--surface);
 		color: var(--muted);
+		box-shadow: var(--shadow-sm);
 	}
-
-	.accent-card {
-		background: linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 58%, var(--card-bg)), var(--card-bg));
+	.date-field:focus-within {
+		border-color: var(--accent);
+		box-shadow: var(--ring);
 	}
-
-	.toggle-card {
-		padding: 0.9rem 1rem;
-		border-radius: 20px;
-		background: color-mix(in srgb, var(--card-bg) 86%, transparent);
-		border: 1px solid var(--border);
+	.date-field input {
+		border: 0;
+		background: transparent;
+		outline: none;
+		color: var(--text);
 	}
-
-	.account-header {
+	.split {
+		display: grid;
+		grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr);
+		gap: 16px;
+	}
+	.split > .card {
+		margin-bottom: 16px;
+	}
+	.list {
+		list-style: none;
+		margin: 0;
+		padding: 6px 8px;
+	}
+	.list li {
 		display: flex;
-		justify-content: space-between;
-		gap: 0.8rem;
-		align-items: flex-start;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 12px;
+		border-radius: 10px;
 	}
-
-	.board-grid {
+	.list li + li {
+		border-top: 1px solid var(--border);
+		border-radius: 0;
+	}
+	.grow {
+		flex: 1;
+		min-width: 0;
+	}
+	.grow strong {
+		display: block;
+		font-weight: 550;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.head-code {
+		display: grid;
+		place-items: center;
+		min-width: 40px;
+		height: 30px;
+		padding: 0 6px;
+		border-radius: 8px;
+		background: var(--surface-3);
+		color: var(--text-2);
+		font-size: 11px;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+	}
+	.kind {
+		display: grid;
+		place-items: center;
+		width: 30px;
+		height: 30px;
+		border-radius: 999px;
+		flex: none;
+	}
+	.kind.income {
+		background: var(--pos-soft);
+		color: var(--pos);
+	}
+	.kind.expense {
+		background: var(--neg-soft);
+		color: var(--neg);
+	}
+	.boards {
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 1rem;
+		gap: 16px;
 	}
-
-	.board-panel {
-		height: 100%;
+	.empty a {
+		color: var(--accent);
 	}
-
-	.board-list {
-		margin-top: 0.35rem;
-	}
-
-	.board-row {
-		padding: 0.85rem 0.9rem;
-		border-radius: 18px;
-		background: color-mix(in srgb, var(--card-bg) 90%, transparent);
-		border: 1px solid var(--border);
-	}
-
-	.board-empty {
-		justify-content: flex-start;
-		padding: 0.95rem 0;
-	}
-
-	.board-message {
-		margin-top: 1rem;
-	}
-
-	.done {
-		text-decoration: line-through;
-		opacity: 0.62;
-	}
-
-	.muted {
-		color: var(--muted);
-	}
-
-	@media (max-width: 980px) {
-		.board-grid {
-			grid-template-columns: 1fr;
+	@media (max-width: 1100px) {
+		.split,
+		.boards {
+			grid-template-columns: minmax(0, 1fr);
 		}
 	}
 </style>

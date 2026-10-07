@@ -1,551 +1,492 @@
 <script>
 	// @ts-nocheck
 	import { onMount } from 'svelte';
-	import { BANKS } from '$lib/constants.js';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
+	import { api, storage } from '$lib/api.js';
+	import { BANK_SUGGESTIONS } from '$lib/constants.js';
+	import { formatINR, labelize, plural } from '$lib/format.js';
+	import { confirmDialog } from '$lib/confirm.js';
+	import { toast } from '$lib/toast.js';
+	import Icon from '$lib/components/Icon.svelte';
+	import Modal from '$lib/components/Modal.svelte';
+	import MultiSelect from '$lib/components/MultiSelect.svelte';
 
-	let balances = { master_shree_start: 0, master_pkb_start: 0, master_hkj_start: 0 };
+	export let data;
+
+	const TABS = [
+		{ key: 'accounts', label: 'Accounts', icon: 'bank' },
+		{ key: 'projects', label: 'Projects', icon: 'map' },
+		{ key: 'entities', label: 'Entities', icon: 'users' },
+		{ key: 'balances', label: 'Master balances', icon: 'wallet' },
+		{ key: 'lists', label: 'Custom lists', icon: 'list' }
+	];
+	const LIST_GROUPS = [
+		{ key: 'expense_sources', custom: 'custom_expense_sources', label: 'Expense sources', placeholder: 'e.g. service-contract' },
+		{ key: 'credit_sources', custom: 'custom_credit_sources', label: 'Credit sources', placeholder: 'e.g. investor' },
+		{ key: 'entity_types', custom: 'custom_entity_types', label: 'Entity types', placeholder: 'e.g. consultant' },
+		{ key: 'property_types', custom: 'custom_property_types', label: 'Property types', placeholder: 'e.g. commercial' }
+	];
+
 	let accounts = [];
 	let projects = [];
 	let entities = [];
-	let message = '';
-	let editingAccountId = null;
-	let editingProjectId = null;
-	let editingEntityId = null;
-	let showProjectRegisteredOwner = false;
-	let showProjectOfficialRecord = false;
+	let heads = [];
+	let options = { expense_sources: [], credit_sources: [], entity_types: [], property_types: [] };
+	let loaded = false;
+	let newListValues = {};
+
+	let entitySearch = '';
 	let filterEntityType = 'all';
 	let filterEntityProjectId = 'all';
-	let masterOptions = {
-		expense_sources: [],
-		credit_sources: [],
-		entity_types: [],
-		property_types: [],
-		custom_expense_sources: [],
-		custom_credit_sources: [],
-		custom_entity_types: [],
-		custom_property_types: []
-	};
-	let newExpenseSource = '';
-	let newCreditSource = '';
-	let newEntityType = '';
-	let newPropertyType = '';
+	let showProjectOwner = storage.get('ledger-project-owner') === '1';
+	let showProjectRecord = storage.get('ledger-project-record') === '1';
 
-	let newAccount = {
-		bank_name: 'PNB',
-		account_number: '',
-		account_holder: '',
-		account_balance: 0,
-		comments: ''
-	};
-	let newProject = {
-		property_name: '',
-		property_location: '',
-		property_type: 'land',
-		current_registered_owner_entity_id: '',
-		official_record: '',
-		comments: ''
-	};
-	let newEntity = { name: '', entity_type: 'customer', comments: '', project_ids: [] };
-	let filteredEntities = [];
+	/** { type, id, values } while the add/edit dialog is open. */
+	let editor = null;
+	let saving = false;
 
-	const toggleSelection = (list, value) => {
-		const normalized = String(value);
-		return list.map(String).includes(normalized)
-			? list.filter((item) => String(item) !== normalized)
-			: [...list, normalized];
-	};
-
-	const getSelectedProjectNames = (selectedIds, emptyLabel = 'Select projects') => {
-		const names = projects
-			.filter((project) => selectedIds?.map(String).includes(String(project.id)))
-			.map((project) => project.property_name);
-
-		return names.length > 0 ? names.join(', ') : emptyLabel;
-	};
-
-	const normalizeEntityRecord = (entity) => ({
-		...entity,
-		project_ids: entity.project_ids || [],
-		project_names: entity.project_names || []
-	});
-
-	const loadAll = async () => {
-		const [balancesRes, accountsRes, projectsRes, entitiesRes, optionsRes] = await Promise.all([
-			fetch('/api/master-balances'),
-			fetch('/api/accounts'),
-			fetch('/api/projects'),
-			fetch('/api/entities'),
-			fetch('/api/master-options')
-		]);
-		if (balancesRes.ok) balances = await balancesRes.json();
-		if (accountsRes.ok) accounts = await accountsRes.json();
-		if (projectsRes.ok) projects = await projectsRes.json();
-		if (entitiesRes.ok) entities = (await entitiesRes.json()).map(normalizeEntityRecord);
-		if (optionsRes.ok) masterOptions = await optionsRes.json();
-	};
-
-	const saveMasterOptions = async (updated) => {
-		const res = await fetch('/api/master-options', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(updated)
-		});
-		if (res.ok) {
-			masterOptions = await res.json();
-			await loadAll();
-		}
-	};
-
-	const addCustomOption = async (kind) => {
-		if (kind === 'expense') {
-			const value = newExpenseSource.trim();
-			if (!value) return;
-			await saveMasterOptions({
-				...masterOptions,
-				custom_expense_sources: [...(masterOptions.custom_expense_sources || []), value]
-			});
-			newExpenseSource = '';
-			return;
-		}
-		if (kind === 'credit') {
-			const value = newCreditSource.trim();
-			if (!value) return;
-			await saveMasterOptions({
-				...masterOptions,
-				custom_credit_sources: [...(masterOptions.custom_credit_sources || []), value]
-			});
-			newCreditSource = '';
-			return;
-		}
-		if (kind === 'entity') {
-			const value = newEntityType.trim();
-			if (!value) return;
-			await saveMasterOptions({
-				...masterOptions,
-				custom_entity_types: [...(masterOptions.custom_entity_types || []), value]
-			});
-			newEntityType = '';
-			return;
-		}
-		if (kind === 'property') {
-			const value = newPropertyType.trim();
-			if (!value) return;
-			await saveMasterOptions({
-				...masterOptions,
-				custom_property_types: [...(masterOptions.custom_property_types || []), value]
-			});
-			newPropertyType = '';
-		}
-	};
-
-	const saveBalances = async () => {
-		message = '';
-		const res = await fetch('/api/master-balances', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(balances)
-		});
-		if (res.ok) {
-			balances = await res.json();
-			message = 'Master balances updated.';
-		}
-	};
-
-	const addAccount = async () => {
-		const res = await fetch('/api/accounts', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(newAccount)
-		});
-		if (res.ok) {
-			newAccount = {
-				bank_name: 'PNB',
-				account_number: '',
-				account_holder: '',
-				account_balance: 0,
-				comments: ''
-			};
-			await loadAll();
-		}
-	};
-
-	const updateAccount = async (account) => {
-		const isEditable = editingAccountId === account.id;
-		await fetch(`/api/accounts/${account.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ ...account, allow_balance_edit: isEditable })
-		});
-		editingAccountId = null;
-		await loadAll();
-	};
-
-	const deleteAccount = async (account) => {
-		const accountName = account.account_holder?.trim() || account.account_number?.trim() || `ID ${account.id}`;
-		const shouldDelete = confirm(`Are you sure you want to delete account ${accountName}?`);
-		if (!shouldDelete) return;
-		const id = account.id;
-		await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
-		if (editingAccountId === id) editingAccountId = null;
-		await loadAll();
-	};
-
-	const addProject = async () => {
-		const res = await fetch('/api/projects', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				...newProject,
-				current_registered_owner_entity_id: newProject.current_registered_owner_entity_id || null
-			})
-		});
-		if (res.ok) {
-			newProject = {
-				property_name: '',
-				property_location: '',
-				property_type: 'land',
-				current_registered_owner_entity_id: '',
-				official_record: '',
-				comments: ''
-			};
-			await loadAll();
-		}
-	};
-
-	const updateProject = async (project) => {
-		await fetch(`/api/projects/${project.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				...project,
-				current_registered_owner_entity_id: project.current_registered_owner_entity_id || null
-			})
-		});
-		editingProjectId = null;
-		await loadAll();
-	};
-
-	const deleteProject = async (project) => {
-		const projectName = project.property_name?.trim() || `ID ${project.id}`;
-		const shouldDelete = confirm(`Are you sure you want to delete project ${projectName}?`);
-		if (!shouldDelete) return;
-		const id = project.id;
-		await fetch(`/api/projects/${id}`, { method: 'DELETE' });
-		if (editingProjectId === id) editingProjectId = null;
-		await loadAll();
-	};
-
-	const addEntity = async () => {
-		const res = await fetch('/api/entities', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(newEntity)
-		});
-		if (res.ok) {
-			newEntity = { name: '', entity_type: 'customer', comments: '', project_ids: [] };
-			await loadAll();
-		}
-	};
-
-	const updateEntity = async (entity) => {
-		await fetch(`/api/entities/${entity.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(entity)
-		});
-		editingEntityId = null;
-		await loadAll();
-	};
-
-	const deleteEntity = async (entity) => {
-		const entityName = entity.name?.trim() || `ID ${entity.id}`;
-		const shouldDelete = confirm(`Are you sure you want to delete entity ${entityName}?`);
-		if (!shouldDelete) return;
-		const id = entity.id;
-		await fetch(`/api/entities/${id}`, { method: 'DELETE' });
-		if (editingEntityId === id) editingEntityId = null;
-		await loadAll();
-	};
-
+	$: tab = TABS.some((item) => item.key === $page.url.searchParams.get('tab')) ? $page.url.searchParams.get('tab') : 'accounts';
+	$: counts = { accounts: accounts.length, projects: projects.length, entities: entities.length, balances: heads.length };
+	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name, hint: project.property_location }));
 	$: filteredEntities = entities.filter((entity) => {
 		if (filterEntityType !== 'all' && entity.entity_type !== filterEntityType) return false;
-		if (
-			filterEntityProjectId !== 'all' &&
-			!(entity.project_ids || []).map(String).includes(String(filterEntityProjectId))
-		)
-			return false;
-
+		if (filterEntityProjectId !== 'all' && !(entity.project_ids || []).map(String).includes(filterEntityProjectId)) return false;
+		if (entitySearch && !`${entity.name} ${entity.comments || ''} ${entity.entity_code}`.toLowerCase().includes(entitySearch.toLowerCase())) return false;
 		return true;
 	});
+	// Keep a removed custom type selectable while editing a record that still uses it.
+	const withCurrent = (list, current) => (current && !list.includes(current) ? [current, ...list] : list);
+	$: entityTypeChoices = withCurrent(options.entity_types, editor?.type === 'entity' ? editor.row?.entity_type : '');
+	$: propertyTypeChoices = withCurrent(options.property_types, editor?.type === 'project' ? editor.row?.property_type : '');
+	$: totalAccountBalance = accounts.reduce((sum, account) => sum + Number(account.account_balance || 0), 0);
+
+	const setTab = (key) => goto(`?tab=${key}`, { replaceState: true, noScroll: true, keepFocus: true });
+
+	const loadAll = async () => {
+		try {
+			[accounts, projects, entities, heads, options] = await Promise.all([
+				api('/api/accounts'),
+				api('/api/projects'),
+				api('/api/entities'),
+				api('/api/heads'),
+				api('/api/master-options')
+			]);
+			loaded = true;
+		} catch (err) {
+			toast.error(err.message);
+		}
+	};
+
+	const BLANK = {
+		account: () => ({ bank_name: '', account_number: '', account_holder: '', account_balance: '', comments: '', allow_balance_edit: false }),
+		project: () => ({ property_name: '', property_location: '', property_type: options.property_types[0] || 'land', current_registered_owner_entity_id: '', official_record: '', comments: '' }),
+		entity: () => ({ name: '', entity_type: options.entity_types[0] || 'customer', comments: '', project_ids: [] }),
+		head: () => ({ name: '', code: '', opening_balance: '' })
+	};
+	const NOUN = { account: 'account', project: 'project', entity: 'entity', head: 'master balance' };
+	const ENDPOINT = { account: '/api/accounts', project: '/api/projects', entity: '/api/entities', head: '/api/heads' };
+
+	const openCreate = (type) => (editor = { type, id: null, values: BLANK[type]() });
+
+	const openEdit = (type, row) => {
+		const values = { ...BLANK[type]() };
+		for (const key of Object.keys(values)) if (row[key] != null) values[key] = row[key];
+		if (type === 'entity') values.project_ids = (row.project_ids || []).map(String);
+		if (type === 'project') values.current_registered_owner_entity_id = row.current_registered_owner_entity_id ? String(row.current_registered_owner_entity_id) : '';
+		editor = { type, id: row.id, values, row };
+	};
+
+	const saveEditor = async () => {
+		const { type, id, values } = editor;
+		saving = true;
+		try {
+			await api(id ? `${ENDPOINT[type]}/${id}` : ENDPOINT[type], { method: id ? 'PUT' : 'POST', body: values });
+			toast.success(`${labelize(NOUN[type])} ${id ? 'updated' : 'added'}`);
+			editor = null;
+			await loadAll();
+		} catch (err) {
+			toast.error(err.message);
+		} finally {
+			saving = false;
+		}
+	};
+
+	const removeRow = async (type, row, name, detail = '') => {
+		const ok = await confirmDialog({ title: `Delete ${NOUN[type]} “${name}”?`, message: detail || 'This cannot be undone.' });
+		if (!ok) return;
+		try {
+			await api(`${ENDPOINT[type]}/${row.id}`, { method: 'DELETE' });
+			toast.success(`${labelize(NOUN[type])} deleted`);
+			if (editor?.id === row.id) editor = null;
+			await loadAll();
+		} catch (err) {
+			toast.error(err.message);
+		}
+	};
+
+	const linkedNote = (count, what) =>
+		count > 0 ? `${count} ${count === 1 ? 'entry references' : 'entries reference'} this ${what}; they will be kept but lose the link. This cannot be undone.` : 'This cannot be undone.';
+
+	const saveLists = async (next) => {
+		try {
+			options = await api('/api/master-options', { method: 'PUT', body: next });
+			return true;
+		} catch (err) {
+			toast.error(err.message);
+			return false;
+		}
+	};
+
+	const addListValue = async (group) => {
+		const value = String(newListValues[group.key] || '').trim();
+		if (!value) return;
+		if (options[group.key].some((item) => item.toLowerCase() === value.toLowerCase())) return toast.error(`“${value}” already exists.`);
+		if (await saveLists({ ...options, [group.custom]: [...options[group.custom], value] })) {
+			newListValues = { ...newListValues, [group.key]: '' };
+			toast.success(`Added “${value}” to ${group.label.toLowerCase()}`);
+		}
+	};
+
+	const removeListValue = async (group, value) => {
+		const ok = await confirmDialog({
+			title: `Remove “${value}”?`,
+			message: 'Existing entries keep this value; it just won’t be offered for new entries.',
+			confirmLabel: 'Remove'
+		});
+		if (ok && (await saveLists({ ...options, [group.custom]: options[group.custom].filter((item) => item !== value) }))) {
+			toast.success(`Removed “${value}”`);
+		}
+	};
+
+	const toggleProjectColumn = (which) => {
+		if (which === 'owner') storage.set('ledger-project-owner', (showProjectOwner = !showProjectOwner) ? '1' : '');
+		else storage.set('ledger-project-record', (showProjectRecord = !showProjectRecord) ? '1' : '');
+	};
 
 	onMount(loadAll);
 </script>
 
-<section class="panel">
-	<h2>Master Balances</h2>
-	<p class="muted">PKB owner is Praveen Bhatt and HKJ owner is Hemant Joshi.</p>
-	<div class="form-grid">
-		<label><span>Master Balance (Shree)</span><input type="number" bind:value={balances.master_shree_start} /></label>
-		<label><span>Master Balance (PKB)</span><input type="number" bind:value={balances.master_pkb_start} /></label>
-		<label><span>Master Balance (HKJ)</span><input type="number" bind:value={balances.master_hkj_start} /></label>
+<header class="page-header">
+	<div>
+		<p class="eyebrow">{data.company.name}</p>
+		<h1>Masters</h1>
+		<p>Accounts, projects, entities, master balances and the lists used across entries.</p>
 	</div>
-	<button on:click={saveBalances}>Save Balances</button>
-	{#if message}<p class="muted">{message}</p>{/if}
-</section>
+</header>
 
-<section class="panel">
-	<h2>Master List Options</h2>
-	<p class="muted">Add custom Expense/Credit Source, Entity Type, and Property Type values.</p>
-	<div class="form-grid options-grid">
-		<div class="option-field">
-			<label><span>New Expense Source</span><input bind:value={newExpenseSource} placeholder="eg. service-contract" /></label>
-			<button class="secondary" on:click={() => addCustomOption('expense')}>Add Expense Source</button>
-		</div>
-		<div class="option-field">
-			<label><span>New Credit Source</span><input bind:value={newCreditSource} placeholder="eg. investor" /></label>
-			<button class="secondary" on:click={() => addCustomOption('credit')}>Add Credit Source</button>
-		</div>
-		<div class="option-field">
-			<label><span>New Entity Type</span><input bind:value={newEntityType} placeholder="eg. consultant" /></label>
-			<button class="secondary" on:click={() => addCustomOption('entity')}>Add Entity Type</button>
-		</div>
-		<div class="option-field">
-			<label><span>New Property Type</span><input bind:value={newPropertyType} placeholder="eg. commercial" /></label>
-			<button class="secondary" on:click={() => addCustomOption('property')}>Add Property Type</button>
-		</div>
-	</div>
-	<div class="chips-wrap">
-		{#each (masterOptions.custom_expense_sources || []) as item}<span class="chip">Expense: {item}</span>{/each}
-		{#each (masterOptions.custom_credit_sources || []) as item}<span class="chip">Credit: {item}</span>{/each}
-		{#each (masterOptions.custom_entity_types || []) as item}<span class="chip">Entity: {item}</span>{/each}
-		{#each (masterOptions.custom_property_types || []) as item}<span class="chip">Property: {item}</span>{/each}
-	</div>
-</section>
+<div class="tabs" role="tablist">
+	{#each TABS as item}
+		<button type="button" role="tab" aria-selected={tab === item.key} class:active={tab === item.key} on:click={() => setTab(item.key)}>
+			<Icon name={item.icon} size={15} />
+			{item.label}
+			{#if counts[item.key] !== undefined && loaded}<span class="count">{counts[item.key]}</span>{/if}
+		</button>
+	{/each}
+</div>
 
-<section class="panel">
-	<h2>Accounts</h2>
-	<div class="form-grid">
-		<label><span>Bank</span><select bind:value={newAccount.bank_name}>{#each BANKS as bank}<option value={bank}>{bank}</option>{/each}</select></label>
-		<label><span>Account Number</span><input bind:value={newAccount.account_number} /></label>
-		<label><span>Account Holder</span><input bind:value={newAccount.account_holder} /></label>
-		<label><span>Balance</span><input type="number" bind:value={newAccount.account_balance} /></label>
-		<label><span>Comments</span><input bind:value={newAccount.comments} /></label>
-	</div>
-	<button on:click={addAccount}>Add Account</button>
-	<table>
-		<thead><tr><th>Bank</th><th>Number</th><th>Holder</th><th>Balance</th><th>Comments</th><th>Action</th></tr></thead>
-		<tbody>{#each accounts as account}<tr>
-			<td><select bind:value={account.bank_name} disabled={editingAccountId !== account.id}>{#each BANKS as bank}<option value={bank}>{bank}</option>{/each}</select></td>
-			<td><input bind:value={account.account_number} readonly={editingAccountId !== account.id} /></td>
-			<td><input bind:value={account.account_holder} readonly={editingAccountId !== account.id} /></td>
-			<td>
-				<div class="balance-cell">
-					<input
-						type="number"
-						bind:value={account.account_balance}
-						readonly={editingAccountId !== account.id}
-					/>
-				</div>
-			</td>
-			<td><input bind:value={account.comments} readonly={editingAccountId !== account.id} /></td>
-			<td><button class="icon" type="button" on:click={() => (editingAccountId = editingAccountId === account.id ? null : account.id)} title="Edit">✎</button> <button class="secondary" on:click={() => updateAccount(account)}>Update</button> <button class="ghost" on:click={() => deleteAccount(account)}>Remove</button></td>
-		</tr>{/each}</tbody>
-	</table>
-</section>
-
-<section class="panel">
-	<h2>Projects</h2>
-	<div class="project-visibility">
-		<label><input type="checkbox" bind:checked={showProjectRegisteredOwner} /> <span>Show current registered owner</span></label>
-		<label><input type="checkbox" bind:checked={showProjectOfficialRecord} /> <span>Show official record</span></label>
-	</div>
-	<div class="form-grid">
-		<label><span>Property Name</span><input bind:value={newProject.property_name} /></label>
-		<label><span>Property Location</span><input bind:value={newProject.property_location} /></label>
-		<label><span>Property Type</span><select bind:value={newProject.property_type}>{#each (masterOptions.property_types || []) as type}<option value={type}>{type}</option>{/each}</select></label>
-		{#if showProjectRegisteredOwner}
-			<label>
-				<span>Current Registered Owner (Entity)</span>
-				<select bind:value={newProject.current_registered_owner_entity_id}>
-					<option value="">Select</option>
-					{#each entities as entity}
-						<option value={entity.id}>{entity.name} ({entity.entity_code})</option>
+{#if tab === 'accounts'}
+	<section class="card">
+		<div class="card-header">
+			<div>
+				<h2>Bank accounts</h2>
+				<p>Balances move automatically with account-mode entries · total {formatINR(totalAccountBalance)}</p>
+			</div>
+			<button class="btn btn-primary" type="button" on:click={() => openCreate('account')}><Icon name="plus" size={15} /> Add account</button>
+		</div>
+		<div class="table-wrap">
+			<table class="table">
+				<thead><tr><th>Account holder</th><th>Bank</th><th>Account number</th><th class="num">Entries</th><th class="num">Balance</th><th class="actions"><span class="sr-only">Actions</span></th></tr></thead>
+				<tbody>
+					{#each accounts as account (account.id)}
+						<tr>
+							<td class="primary">{account.account_holder}{#if account.comments}<span class="cell-sub">{account.comments}</span>{/if}</td>
+							<td>{account.bank_name}</td>
+							<td class="mono">{account.account_number || '—'}</td>
+							<td class="num">{account.transaction_count}</td>
+							<td class="num amount" class:neg={account.account_balance < 0}>{formatINR(account.account_balance)}</td>
+							<td class="actions">
+								<span class="row-actions">
+									<button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Edit {account.account_holder}" on:click={() => openEdit('account', account)}><Icon name="edit" size={15} /></button>
+									<button class="btn btn-ghost btn-icon btn-sm btn-danger-ghost" type="button" aria-label="Delete {account.account_holder}" on:click={() => removeRow('account', account, account.account_holder, linkedNote(account.transaction_count, 'account'))}><Icon name="trash" size={15} /></button>
+								</span>
+							</td>
+						</tr>
+					{:else}
+						<tr><td colspan="6"><div class="empty"><span class="empty-icon"><Icon name="bank" size={20} /></span><h3>No accounts yet</h3><p>Add the bank accounts this company transacts through.</p></div></td></tr>
 					{/each}
+				</tbody>
+			</table>
+		</div>
+	</section>
+{:else if tab === 'projects'}
+	<section class="card">
+		<div class="card-header">
+			<div>
+				<h2>Projects &amp; properties</h2>
+				<p>Entries and entities can be linked to one or more projects</p>
+			</div>
+			<div class="page-actions">
+				<button type="button" class="toggle-chip" class:on={showProjectOwner} aria-pressed={showProjectOwner} on:click={() => toggleProjectColumn('owner')}>Registered owner</button>
+				<button type="button" class="toggle-chip" class:on={showProjectRecord} aria-pressed={showProjectRecord} on:click={() => toggleProjectColumn('record')}>Official record</button>
+				<button class="btn btn-primary" type="button" on:click={() => openCreate('project')}><Icon name="plus" size={15} /> Add project</button>
+			</div>
+		</div>
+		<div class="table-wrap">
+			<table class="table">
+				<thead>
+					<tr>
+						<th>Project</th><th>Type</th>
+						{#if showProjectOwner}<th>Registered owner</th>{/if}
+						{#if showProjectRecord}<th>Official record</th>{/if}
+						<th>Comments</th><th class="num">Entries</th><th class="actions"><span class="sr-only">Actions</span></th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each projects as project (project.id)}
+						<tr>
+							<td class="primary">{project.property_name}<span class="cell-sub">{project.property_location}</span></td>
+							<td><span class="badge">{labelize(project.property_type)}</span></td>
+							{#if showProjectOwner}<td>{project.current_registered_owner_name || '—'}</td>{/if}
+							{#if showProjectRecord}<td>{project.official_record || '—'}</td>{/if}
+							<td class="muted">{project.comments || '—'}</td>
+							<td class="num">{project.transaction_count}</td>
+							<td class="actions">
+								<span class="row-actions">
+									<button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Edit {project.property_name}" on:click={() => openEdit('project', project)}><Icon name="edit" size={15} /></button>
+									<button class="btn btn-ghost btn-icon btn-sm btn-danger-ghost" type="button" aria-label="Delete {project.property_name}" on:click={() => removeRow('project', project, project.property_name, linkedNote(project.transaction_count, 'project'))}><Icon name="trash" size={15} /></button>
+								</span>
+							</td>
+						</tr>
+					{:else}
+						<tr><td colspan="7"><div class="empty"><span class="empty-icon"><Icon name="map" size={20} /></span><h3>No projects yet</h3><p>Add land, houses or projects to tag entries against.</p></div></td></tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</section>
+{:else if tab === 'entities'}
+	<section class="card">
+		<div class="card-header">
+			<div>
+				<h2>Entities</h2>
+				<p>Customers, merchants, partners and everyone else you transact with</p>
+			</div>
+			<button class="btn btn-primary" type="button" on:click={() => openCreate('entity')}><Icon name="plus" size={15} /> Add entity</button>
+		</div>
+		<div class="toolbar filters">
+			<label class="field grow">
+				<span class="label">Search</span>
+				<input class="input" bind:value={entitySearch} placeholder="Name, code or comment" />
+			</label>
+			<label class="field">
+				<span class="label">Type</span>
+				<select class="select" bind:value={filterEntityType}>
+					<option value="all">All types</option>
+					{#each options.entity_types as type}<option value={type}>{labelize(type)}</option>{/each}
 				</select>
 			</label>
-		{/if}
-		{#if showProjectOfficialRecord}
-			<label><span>Official Record</span><input bind:value={newProject.official_record} /></label>
-		{/if}
-		<label><span>Comments</span><input bind:value={newProject.comments} /></label>
-	</div>
-	<button on:click={addProject}>Add Project</button>
-	<table>
-		<thead>
-			<tr>
-				<th>Name</th>
-				<th>Location</th>
-				<th>Type</th>
-				{#if showProjectRegisteredOwner}<th>Current Registered Owner</th>{/if}
-				{#if showProjectOfficialRecord}<th>Official Record</th>{/if}
-				<th>Comments</th>
-				<th>Action</th>
-			</tr>
-		</thead>
-		<tbody>{#each projects as project}<tr>
-			<td><input bind:value={project.property_name} readonly={editingProjectId !== project.id} /></td>
-			<td><input bind:value={project.property_location} readonly={editingProjectId !== project.id} /></td>
-			<td><select bind:value={project.property_type} disabled={editingProjectId !== project.id}>{#each (masterOptions.property_types || []) as type}<option value={type}>{type}</option>{/each}</select></td>
-			{#if showProjectRegisteredOwner}
-				<td><select bind:value={project.current_registered_owner_entity_id} disabled={editingProjectId !== project.id}><option value="">Select</option>{#each entities as entity}<option value={entity.id}>{entity.name} ({entity.entity_code})</option>{/each}</select></td>
-			{/if}
-			{#if showProjectOfficialRecord}
-				<td><input bind:value={project.official_record} readonly={editingProjectId !== project.id} /></td>
-			{/if}
-			<td><input bind:value={project.comments} readonly={editingProjectId !== project.id} /></td>
-			<td><button class="icon" type="button" on:click={() => (editingProjectId = editingProjectId === project.id ? null : project.id)} title="Edit">✎</button> <button class="secondary" on:click={() => updateProject(project)}>Update</button> <button class="ghost" on:click={() => deleteProject(project)}>Remove</button></td>
-		</tr>{/each}</tbody>
-	</table>
-</section>
-
-<section class="panel">
-	<h2>Entities</h2>
-	<div class="form-grid">
-		<label><span>Name</span><input bind:value={newEntity.name} /></label>
-		<label><span>Type</span><select bind:value={newEntity.entity_type}>{#each (masterOptions.entity_types || []) as type}<option value={type}>{type}</option>{/each}</select></label>
-		<label class="wide-field">
-			<span>Attach Projects</span>
-			<details class="multi-select">
-				<summary class="multi-trigger">{getSelectedProjectNames(newEntity.project_ids)}</summary>
-				<div class="multi-menu">
-					{#each projects as project}
-						<label class="multi-option">
-							<input
-								type="checkbox"
-								checked={newEntity.project_ids?.map(String).includes(String(project.id))}
-								on:change={() => (newEntity.project_ids = toggleSelection(newEntity.project_ids || [], project.id))}
-							/>
-							<span>{project.property_name}</span>
-						</label>
+			<label class="field">
+				<span class="label">Project</span>
+				<select class="select" bind:value={filterEntityProjectId}>
+					<option value="all">All projects</option>
+					{#each projects as project (project.id)}<option value={String(project.id)}>{project.property_name}</option>{/each}
+				</select>
+			</label>
+		</div>
+		<div class="table-wrap">
+			<table class="table">
+				<thead><tr><th>Name</th><th>Type</th><th>Code</th><th>Projects</th><th class="num">Entries</th><th class="actions"><span class="sr-only">Actions</span></th></tr></thead>
+				<tbody>
+					{#each filteredEntities as entity (entity.id)}
+						<tr>
+							<td class="primary">{entity.name}{#if entity.comments}<span class="cell-sub">{entity.comments}</span>{/if}</td>
+							<td><span class="badge">{labelize(entity.entity_type)}</span></td>
+							<td class="mono">{entity.entity_code}</td>
+							<td>{entity.project_names?.length ? entity.project_names.join(', ') : '—'}</td>
+							<td class="num">{entity.transaction_count}</td>
+							<td class="actions">
+								<span class="row-actions">
+									<button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Edit {entity.name}" on:click={() => openEdit('entity', entity)}><Icon name="edit" size={15} /></button>
+									<button class="btn btn-ghost btn-icon btn-sm btn-danger-ghost" type="button" aria-label="Delete {entity.name}" on:click={() => removeRow('entity', entity, entity.name, linkedNote(entity.transaction_count, 'entity'))}><Icon name="trash" size={15} /></button>
+								</span>
+							</td>
+						</tr>
+					{:else}
+						<tr><td colspan="6"><div class="empty"><span class="empty-icon"><Icon name="users" size={20} /></span><h3>{entities.length ? 'No entities match' : 'No entities yet'}</h3><p>{entities.length ? 'Try a different search or filter.' : 'Every entry is recorded against an entity.'}</p></div></td></tr>
 					{/each}
+				</tbody>
+			</table>
+		</div>
+		<div class="card-footer"><span class="muted">Showing {filteredEntities.length} of {entities.length}</span></div>
+	</section>
+{:else if tab === 'balances'}
+	<section class="card">
+		<div class="card-header">
+			<div>
+				<h2>Master balances</h2>
+				<p>Every entry is attached to one master balance. Balance = opening + income − expense.</p>
+			</div>
+			<button class="btn btn-primary" type="button" on:click={() => openCreate('head')}><Icon name="plus" size={15} /> Add master balance</button>
+		</div>
+		<div class="table-wrap">
+			<table class="table">
+				<thead><tr><th>Name</th><th>Code</th><th class="num">Opening</th><th class="num">Income</th><th class="num">Expense</th><th class="num">Balance</th><th class="actions"><span class="sr-only">Actions</span></th></tr></thead>
+				<tbody>
+					{#each heads as head (head.id)}
+						<tr>
+							<td class="primary">{head.name}<span class="cell-sub">{plural(head.usage_count, 'entry', 'entries')}</span></td>
+							<td><span class="badge mono">{head.code}</span></td>
+							<td class="num">{formatINR(head.opening_balance)}</td>
+							<td class="num pos">{formatINR(head.total_income)}</td>
+							<td class="num">{formatINR(head.total_expense)}</td>
+							<td class="num amount" class:neg={head.balance < 0}>{formatINR(head.balance)}</td>
+							<td class="actions">
+								<span class="row-actions">
+									<button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Edit {head.name}" on:click={() => openEdit('head', head)}><Icon name="edit" size={15} /></button>
+									<button class="btn btn-ghost btn-icon btn-sm btn-danger-ghost" type="button" aria-label="Delete {head.name}" disabled={head.usage_count > 0 || heads.length <= 1} title={head.usage_count > 0 ? 'In use by entries' : heads.length <= 1 ? 'At least one is required' : 'Delete'} on:click={() => removeRow('head', head, head.name)}><Icon name="trash" size={15} /></button>
+								</span>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</section>
+{:else}
+	<div class="lists">
+		{#each LIST_GROUPS as group}
+			<section class="card">
+				<div class="card-header">
+					<div>
+						<h2>{group.label}</h2>
+						<p>{options[group.custom]?.length || 0} custom · {(options[group.key]?.length || 0) - (options[group.custom]?.length || 0)} built-in</p>
+					</div>
 				</div>
-			</details>
-		</label>
-		<label><span>Comments</span><input bind:value={newEntity.comments} /></label>
+				<div class="card-body">
+					<form class="add-row" on:submit|preventDefault={() => addListValue(group)}>
+						<input class="input" bind:value={newListValues[group.key]} placeholder={group.placeholder} aria-label="New {group.label}" />
+						<button class="btn" type="submit"><Icon name="plus" size={14} /> Add</button>
+					</form>
+					<div class="chip-row">
+						{#each options[group.custom] || [] as value}
+							<span class="chip">{value}<button type="button" aria-label="Remove {value}" on:click={() => removeListValue(group, value)}><Icon name="x" size={12} /></button></span>
+						{/each}
+					</div>
+					<p class="builtin"><span class="muted">Built-in:</span> {(options[group.key] || []).filter((item) => !(options[group.custom] || []).includes(item)).map(labelize).join(', ')}</p>
+				</div>
+			</section>
+		{/each}
 	</div>
-	<button on:click={addEntity}>Add Entity</button>
-	<div class="entity-filters">
-		<label>
-			<span>Filter by Type</span>
-			<select bind:value={filterEntityType}>
-				<option value="all">All types</option>
-				{#each (masterOptions.entity_types || []) as type}
-					<option value={type}>{type}</option>
-				{/each}
-			</select>
-		</label>
-		<label>
-			<span>Filter by Project</span>
-			<select bind:value={filterEntityProjectId}>
-				<option value="all">All projects</option>
-				{#each projects as project}
-					<option value={String(project.id)}>{project.property_name}</option>
-				{/each}
-			</select>
-		</label>
-	</div>
-	<table>
-		<thead><tr><th>Name</th><th>Type</th><th>Code</th><th>Attached Projects</th><th>Comments</th><th>Action</th></tr></thead>
-		<tbody>{#each filteredEntities as entity}<tr>
-			<td><input bind:value={entity.name} readonly={editingEntityId !== entity.id} /></td>
-			<td><select bind:value={entity.entity_type} disabled={editingEntityId !== entity.id}>{#each (masterOptions.entity_types || []) as type}<option value={type}>{type}</option>{/each}</select></td>
-			<td>{entity.entity_code}</td>
-			<td>
-				{#if editingEntityId === entity.id}
-					<details class="multi-select">
-						<summary class="multi-trigger">{getSelectedProjectNames(entity.project_ids)}</summary>
-						<div class="multi-menu">
-							{#each projects as project}
-								<label class="multi-option">
-									<input
-										type="checkbox"
-										checked={entity.project_ids?.map(String).includes(String(project.id))}
-										on:change={() => (entity.project_ids = toggleSelection(entity.project_ids || [], project.id))}
-									/>
-									<span>{project.property_name}</span>
-								</label>
-							{/each}
-						</div>
-					</details>
+{/if}
+
+<Modal open={Boolean(editor)} title={editor ? `${editor.id ? 'Edit' : 'Add'} ${NOUN[editor.type]}` : ''} width="600px" on:close={() => (editor = null)}>
+	{#if editor}
+		<form id="master-editor" class="form-grid" on:submit|preventDefault={saveEditor}>
+			{#if editor.type === 'account'}
+				<label class="field"><span class="label">Account holder <span class="req">*</span></span><input class="input" bind:value={editor.values.account_holder} required /></label>
+				<label class="field">
+					<span class="label">Bank <span class="req">*</span></span>
+					<input class="input" list="bank-suggestions" bind:value={editor.values.bank_name} placeholder="Type or pick a bank" required />
+					<datalist id="bank-suggestions">{#each BANK_SUGGESTIONS as bank}<option value={bank}></option>{/each}</datalist>
+				</label>
+				<label class="field"><span class="label">Account number</span><input class="input mono" bind:value={editor.values.account_number} /></label>
+				{#if editor.id}
+					<div class="field">
+						<span class="label">Balance</span>
+						<input class="input" type="number" step="any" bind:value={editor.values.account_balance} disabled={!editor.values.allow_balance_edit} />
+						<label class="check"><input type="checkbox" bind:checked={editor.values.allow_balance_edit} /> Override balance manually</label>
+					</div>
 				{:else}
-					<div class="readonly-list">{getSelectedProjectNames(entity.project_ids, '-')}</div>
+					<label class="field"><span class="label">Opening balance</span><input class="input" type="number" step="any" bind:value={editor.values.account_balance} placeholder="0" /></label>
 				{/if}
-			</td>
-			<td><input bind:value={entity.comments} readonly={editingEntityId !== entity.id} /></td>
-			<td><button class="icon" type="button" on:click={() => (editingEntityId = editingEntityId === entity.id ? null : entity.id)} title="Edit">✎</button> <button class="secondary" on:click={() => updateEntity(entity)}>Update</button> <button class="ghost" on:click={() => deleteEntity(entity)}>Remove</button></td>
-		</tr>{/each}</tbody>
-	</table>
-</section>
+				<label class="field span-all"><span class="label">Comments</span><input class="input" bind:value={editor.values.comments} /></label>
+			{:else if editor.type === 'project'}
+				<label class="field"><span class="label">Property name <span class="req">*</span></span><input class="input" bind:value={editor.values.property_name} required /></label>
+				<label class="field"><span class="label">Location <span class="req">*</span></span><input class="input" bind:value={editor.values.property_location} required /></label>
+				<label class="field">
+					<span class="label">Type</span>
+					<select class="select" bind:value={editor.values.property_type}>{#each propertyTypeChoices as type}<option value={type}>{labelize(type)}</option>{/each}</select>
+				</label>
+				<label class="field">
+					<span class="label">Registered owner</span>
+					<select class="select" bind:value={editor.values.current_registered_owner_entity_id}>
+						<option value="">None</option>
+						{#each entities as entity (entity.id)}<option value={String(entity.id)}>{entity.name} ({entity.entity_code})</option>{/each}
+					</select>
+				</label>
+				<label class="field span-all"><span class="label">Official record</span><input class="input" bind:value={editor.values.official_record} placeholder="Khasra / registry / file reference" /></label>
+				<label class="field span-all"><span class="label">Comments</span><input class="input" bind:value={editor.values.comments} /></label>
+			{:else if editor.type === 'entity'}
+				<label class="field"><span class="label">Name <span class="req">*</span></span><input class="input" bind:value={editor.values.name} required /></label>
+				<label class="field">
+					<span class="label">Type</span>
+					<select class="select" bind:value={editor.values.entity_type}>{#each entityTypeChoices as type}<option value={type}>{labelize(type)}</option>{/each}</select>
+					<span class="hint">The entity code is generated from the type.</span>
+				</label>
+				<div class="field span-all">
+					<span class="label">Linked projects</span>
+					<MultiSelect options={projectOptions} bind:value={editor.values.project_ids} placeholder="No projects" emptyLabel="No projects yet." />
+				</div>
+				<label class="field span-all"><span class="label">Comments</span><input class="input" bind:value={editor.values.comments} /></label>
+			{:else if editor.type === 'head'}
+				<label class="field"><span class="label">Name <span class="req">*</span></span><input class="input" bind:value={editor.values.name} placeholder="e.g. Partner A" required /></label>
+				<label class="field">
+					<span class="label">Code</span>
+					<input class="input mono" bind:value={editor.values.code} maxlength="12" placeholder="Auto" style="text-transform: uppercase" />
+					{#if editor.id && editor.row?.usage_count > 0}<span class="hint">Changing the code updates all {editor.row.usage_count} linked entries.</span>{/if}
+				</label>
+				<label class="field"><span class="label">Opening balance</span><input class="input" type="number" step="any" bind:value={editor.values.opening_balance} placeholder="0" /></label>
+			{/if}
+		</form>
+	{/if}
+	<svelte:fragment slot="footer">
+		<button class="btn" type="button" on:click={() => (editor = null)}>Cancel</button>
+		<button class="btn btn-primary" type="submit" form="master-editor" disabled={saving}>{saving ? 'Saving…' : editor?.id ? 'Save changes' : 'Add'}</button>
+	</svelte:fragment>
+</Modal>
 
 <style>
-	.panel { background: var(--panel-bg); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); margin-bottom: 20px; }
-	.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
-	.options-grid { align-items: end; }
-	.option-field { display: grid; gap: 8px; }
-	.option-field button { justify-self: start; }
-	label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
-	input, select, button { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
-	button { background: var(--primary-bg); color: var(--primary-text); border: none; cursor: pointer; }
-	button.secondary { background: var(--secondary-bg); color: var(--secondary-text); border: 1px solid var(--border); }
-	button.ghost { background: transparent; color: var(--ghost-text); border: 1px solid var(--border); }
-	button.icon { padding: 8px 10px; min-width: 40px; }
-	.project-visibility { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
-	.project-visibility label { display: flex; align-items: center; gap: 8px; }
-	.entity-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 16px; }
-	.chips-wrap { display: flex; gap: 8px; flex-wrap: wrap; }
-	.chip { border: 1px solid var(--border); background: var(--card-bg); padding: 6px 10px; border-radius: 999px; font-size: 12px; }
-	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-	th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px; vertical-align: top; }
-	.muted { color: var(--muted); }
-	.balance-cell { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-	.wide-field { grid-column: span 2; }
-	.multi-select { position: relative; }
-	.multi-select summary { list-style: none; }
-	.multi-select summary::-webkit-details-marker { display: none; }
-	.multi-trigger {
+	.filters {
+		padding: 14px 20px;
+		border-bottom: 1px solid var(--border);
+	}
+	.filters .field {
+		flex: 1 1 160px;
+	}
+	.filters .field.grow {
+		flex: 2 1 240px;
+	}
+	.lists {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 16px;
+	}
+	.lists .card {
+		margin: 0;
+	}
+	.add-row {
 		display: flex;
-		align-items: center;
-		min-height: 42px;
-		padding: 10px 12px;
-		border-radius: 10px;
-		border: 1px solid var(--border);
-		background: var(--input-bg);
-		color: var(--text);
-		cursor: pointer;
+		gap: 8px;
+		margin-bottom: 14px;
 	}
-	.multi-menu {
-		position: absolute;
-		top: calc(100% + 6px);
-		left: 0;
-		z-index: 5;
-		min-width: 100%;
-		max-height: 220px;
-		overflow: auto;
-		padding: 10px;
-		border: 1px solid var(--border);
-		border-radius: 12px;
-		background: var(--panel-bg);
-		box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+	.builtin {
+		margin-top: 14px;
+		font-size: 12.5px;
+		color: var(--text-2);
+		line-height: 1.7;
 	}
-	.multi-option {
+	.check {
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 6px 0;
-		color: var(--text);
+		font-size: 13px;
+		color: var(--text-2);
+		cursor: pointer;
 	}
-	.readonly-list { min-height: 42px; display: flex; align-items: center; color: var(--text); }
-	@media (max-width: 720px) {
-		.wide-field { grid-column: span 1; }
+	@media (max-width: 900px) {
+		.lists {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 </style>
