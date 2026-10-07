@@ -28,6 +28,48 @@
 	const formatINR = (value) =>
 		new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(value || 0);
 
+	const formatShortDate = (value) => {
+		const raw = String(value || '').trim();
+		if (!raw) return '-';
+
+		const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+		if (slashMatch) {
+			const day = slashMatch[1].padStart(2, '0');
+			const month = slashMatch[2].padStart(2, '0');
+			const year = slashMatch[3].slice(-2);
+			return `${day}/${month}/${year}`;
+		}
+
+		const date = new Date(`${raw}T00:00:00`);
+		if (Number.isNaN(date.getTime())) return raw;
+
+		const day = String(date.getDate()).padStart(2, '0');
+		const month = String(date.getMonth() + 1).padStart(2, '0');
+		const year = String(date.getFullYear()).slice(-2);
+		return `${day}/${month}/${year}`;
+	};
+
+	const sourceWiseCumulative = (rows = []) => {
+		const totals = new Map();
+
+		for (const row of rows) {
+			const sourceLabel = String(row.source || '').trim() || 'Unspecified';
+			const normalizedSource = sourceLabel.toLowerCase();
+			if (normalizedSource === 'total') continue;
+
+			const nextValue = (totals.get(sourceLabel) || 0) + Number(row.amount || 0);
+			totals.set(sourceLabel, nextValue);
+		}
+
+		return [...totals.entries()]
+			.map(([source, total]) => ({ source, total }))
+			.filter((item) => Number(item.total) !== 0)
+			.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+	};
+
+	$: incomeSourceCumulative = sourceWiseCumulative(report?.rows?.income || []);
+	$: expenseSourceCumulative = sourceWiseCumulative(report?.rows?.expenses || []);
+
 	const toIsoDate = (value) => value.toISOString().slice(0, 10);
 
 	const applyDatePreset = (preset) => {
@@ -97,13 +139,17 @@
 		}
 	};
 
+	const printMinimalReport = () => {
+		window.print();
+	};
+
 	onMount(async () => {
 		await loadFilters();
 		await runReport();
 	});
 </script>
 
-<section class="panel">
+<section class="panel no-print">
 	<h2>Reports</h2>
 	<p class="muted">Generate income, expense, or combined report and filter by one or more entities/projects.</p>
 	<div class="form-grid">
@@ -168,13 +214,16 @@
 			</div>
 		</label>
 	</div>
-	<button on:click={runReport}>Run Report</button>
+	<div class="action-row">
+		<button on:click={runReport}>Run Report</button>
+		<button class="secondary" on:click={printMinimalReport} disabled={!report}>Print (Minimal)</button>
+	</div>
 	{#if message}<p class="muted">{message}</p>{/if}
 </section>
 
 {#if report}
 	{#if reportType !== 'expense'}
-		<section class="panel">
+		<section class="panel no-print">
 			<h3>Income Columns</h3>
 			<div class="detail-toggles">
 				<label><input type="checkbox" bind:checked={showIncomeProjects} /> <span>Show income projects</span></label>
@@ -186,7 +235,7 @@
 	{/if}
 
 	{#if reportType !== 'income'}
-		<section class="panel">
+		<section class="panel no-print">
 			<h3>Expense Columns</h3>
 			<div class="detail-toggles">
 				<label><input type="checkbox" bind:checked={showExpenseProjects} /> <span>Show expense projects</span></label>
@@ -197,7 +246,7 @@
 		</section>
 	{/if}
 
-	<section class="panel">
+	<section class="panel no-print">
 		<h3>Summary</h3>
 		<div class="grid">
 			<div class="card"><h4>Total Income</h4><p class="amount-value">{formatINR(report.total_income)}</p></div>
@@ -213,7 +262,7 @@
 			<table>
 				<thead>
 					<tr>
-						<th>Date</th>
+						<th class="date-col">Date</th>
 						<th>Entity</th>
 						{#if showIncomeProjects}<th>Projects</th>{/if}
 						{#if showIncomeType}<th>Type</th>{/if}
@@ -230,20 +279,42 @@
 					{:else}
 						{#each report.rows.income as row}
 							<tr>
-								<td>{row.date}</td>
+								<td class="date-cell">{formatShortDate(row.date)}</td>
 								<td>{row.entity_name || '-'}</td>
 								{#if showIncomeProjects}<td>{row.project_names || '-'}</td>{/if}
 								{#if showIncomeType}<td>{row.payment_mode || '-'}</td>{/if}
 								{#if showIncomeSource}<td>{row.source || '-'}</td>{/if}
 								{#if showIncomeAttachment}<td>{row.master_owner || '-'}</td>{/if}
-								<td>{formatINR(row.amount)}</td>
+								<td class="amount-cell">{formatINR(row.amount)}</td>
 								<td>{formatINR(row.entity_cumulative)}</td>
-								<td>{row.comments || '-'}</td>
+								<td class="comments-cell">{row.comments || '-'}</td>
 							</tr>
 						{/each}
 					{/if}
 				</tbody>
 			</table>
+
+			<h4>Source-wise Cumulative Income</h4>
+			{#if incomeSourceCumulative.length === 0}
+				<p class="muted">No source-wise cumulative income to show.</p>
+			{:else}
+				<table>
+					<thead>
+						<tr>
+							<th>Source</th>
+							<th>Cumulative Amount</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each incomeSourceCumulative as item}
+							<tr>
+								<td>{item.source}</td>
+								<td class="amount-cell">{formatINR(item.total)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
 		</section>
 	{/if}
 
@@ -254,7 +325,7 @@
 			<table>
 				<thead>
 					<tr>
-						<th>Date</th>
+						<th class="date-col">Date</th>
 						<th>Entity</th>
 						{#if showExpenseProjects}<th>Projects</th>{/if}
 						{#if showExpenseType}<th>Type</th>{/if}
@@ -271,20 +342,42 @@
 					{:else}
 						{#each report.rows.expenses as row}
 							<tr>
-								<td>{row.date}</td>
+								<td class="date-cell">{formatShortDate(row.date)}</td>
 								<td>{row.entity_name || '-'}</td>
 								{#if showExpenseProjects}<td>{row.project_names || '-'}</td>{/if}
 								{#if showExpenseType}<td>{row.payment_mode || '-'}</td>{/if}
 								{#if showExpenseSource}<td>{row.source || '-'}</td>{/if}
 								{#if showExpenseAttachment}<td>{row.master_owner || '-'}</td>{/if}
-								<td>{formatINR(row.amount)}</td>
+								<td class="amount-cell">{formatINR(row.amount)}</td>
 								<td>{formatINR(row.entity_cumulative)}</td>
-								<td>{row.comments || '-'}</td>
+								<td class="comments-cell">{row.comments || '-'}</td>
 							</tr>
 						{/each}
 					{/if}
 				</tbody>
 			</table>
+
+			<h4>Source-wise Cumulative Expense</h4>
+			{#if expenseSourceCumulative.length === 0}
+				<p class="muted">No source-wise cumulative expense to show.</p>
+			{:else}
+				<table>
+					<thead>
+						<tr>
+							<th>Source</th>
+							<th>Cumulative Amount</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each expenseSourceCumulative as item}
+							<tr>
+								<td>{item.source}</td>
+								<td class="amount-cell">{formatINR(item.total)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
 		</section>
 	{/if}
 {/if}
@@ -293,6 +386,7 @@
 	.panel { background: var(--panel-bg); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); margin-bottom: 20px; }
 	.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
 	.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+	.action-row { display: flex; gap: 10px; flex-wrap: wrap; }
 	.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 	label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
 	label.wide { grid-column: 1 / -1; }
@@ -306,5 +400,65 @@
 	.detail-toggles label { display: flex; align-items: center; gap: 6px; }
 	table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 	th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px; vertical-align: top; }
+	.date-col, .date-cell { white-space: nowrap; }
+	.amount-cell { font-weight: 700; }
+	.comments-cell { font-size: 0.9em; }
 	.muted { color: var(--muted); }
+
+	button.secondary { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); }
+
+	@page {
+		size: A4 portrait;
+		margin: 12mm;
+	}
+
+	@media print {
+		:global(body) {
+			font-size: 14pt;
+			line-height: 1.4;
+			background: #fff;
+			color: #000;
+		}
+
+		.no-print {
+			display: none !important;
+		}
+
+		.panel {
+			background: #fff;
+			box-shadow: none;
+			border-radius: 0;
+			padding: 0;
+			margin: 0 0 8mm;
+			break-inside: avoid-page;
+		}
+
+		h3 {
+			font-size: 18pt;
+			margin: 0 0 3mm;
+		}
+
+		h4 {
+			font-size: 15pt;
+			margin: 4mm 0 2mm;
+		}
+
+		table {
+			margin-top: 0;
+			font-size: 13pt;
+		}
+
+		th, td {
+			padding: 2.5mm 2mm;
+			border-bottom: 0.35mm solid #999;
+		}
+
+		tr {
+			break-inside: avoid;
+		}
+
+		.amount-cell {
+			font-weight: 800;
+		}
+	}
 </style>
