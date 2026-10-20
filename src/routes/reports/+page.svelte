@@ -39,6 +39,9 @@
 	let report = null;
 	let running = false;
 	let columns = readColumns();
+	let showEntityComments = storage.get('ledger:report-entity-comments') === '1';
+	let showEntityCumulative = storage.get('ledger:report-entity-cumulative') !== '0';
+	let showEntityType = storage.get('ledger:report-entity-type') !== '0';
 
 	function readColumns() {
 		try {
@@ -106,6 +109,12 @@
 					? [{ side: 'expense', title: 'Expenses', rows: report.rows.expenses, total: report.total_expense, sources: sourceTotals(report.rows.expenses) }]
 					: [])
 			]
+		: [];
+	$: storage.set('ledger:report-entity-comments', showEntityComments ? '1' : '0');
+	$: storage.set('ledger:report-entity-cumulative', showEntityCumulative ? '1' : '0');
+	$: storage.set('ledger:report-entity-type', showEntityType ? '1' : '0');
+	$: reportProjectNames = report
+		? projects.filter((p) => report.projectIds.includes(p.id)).map((p) => p.property_name)
 		: [];
 	$: filterSummary = [
 		selectedEntityIds.length ? `${selectedEntityIds.length} entit${selectedEntityIds.length === 1 ? 'y' : 'ies'}` : 'All entities',
@@ -223,6 +232,7 @@
 	<div class="print-only letterhead">
 		<div>
 			<h1>{data.company.legal_name || data.company.name}</h1>
+			{#if reportProjectNames.length}<h2 class="letterhead-project">{reportProjectNames.join(', ')}</h2>{/if}
 			{#if data.company.address}<p>{data.company.address}</p>{/if}
 			<p>
 				{[data.company.tax_id ? `GSTIN/PAN: ${data.company.tax_id}` : '', data.company.phone, data.company.email].filter(Boolean).join(' · ')}
@@ -236,35 +246,108 @@
 		</div>
 	</div>
 
-	<section class="kpi-grid summary">
+	<section class="kpi-grid summary" style="--kpi-count: {report.reportType === 'combined' ? 3 : 1}">
+		{#if report.reportType !== 'expense'}
 		<article class="kpi">
 			<span class="kpi-label"><span class="kpi-dot no-print" style="background: var(--series-income)"></span>Total income</span>
-			<span class="kpi-value">{formatINR(report.total_income)}</span>
-			<span class="kpi-foot">{report.reportType === 'expense' ? 'Not listed in this report' : plural(report.rows.income.length, 'entry', 'entries')}</span>
+			<span class="kpi-value income">{formatINR(report.total_income)}</span>
+			<span class="kpi-foot">{plural(report.rows.income.length, 'entry', 'entries')}</span>
 		</article>
+		{/if}
+		{#if report.reportType !== 'income'}
 		<article class="kpi">
 			<span class="kpi-label"><span class="kpi-dot no-print" style="background: var(--series-expense)"></span>Total expense</span>
-			<span class="kpi-value">{formatINR(report.total_expense)}</span>
-			<span class="kpi-foot">{report.reportType === 'income' ? 'Not listed in this report' : plural(report.rows.expenses.length, 'entry', 'entries')}</span>
+			<span class="kpi-value expense">{formatINR(report.total_expense)}</span>
+			<span class="kpi-foot">{plural(report.rows.expenses.length, 'entry', 'entries')}</span>
 		</article>
+		{/if}
+		{#if report.reportType === 'combined'}
 		<article class="kpi">
 			<span class="kpi-label">Net</span>
 			<span class="kpi-value" class:pos={report.net > 0} class:neg={report.net < 0}>{formatINR(report.net)}</span>
 			<span class="kpi-foot no-print">{formatDate(report.start)} – {formatDate(report.end)}</span>
 		</article>
+		{/if}
 	</section>
+
+	{#if report.heads.length > 0}
+		<section class="card heads-section">
+			<div class="card-header"><h2>Master balances</h2></div>
+			<div class="table-wrap">
+				<table class="table">
+					<thead>
+						<tr>
+							<th>Master balance</th>
+							{#if report.reportType !== 'expense'}<th class="num">Income</th>{/if}
+							{#if report.reportType !== 'income'}<th class="num">Expense</th>{/if}
+							{#if report.reportType === 'combined'}<th class="num">Net</th>{/if}
+						</tr>
+					</thead>
+					<tbody>
+						{#each report.heads as head (head.code)}
+							<tr>
+								<td class="primary">{head.name}</td>
+								{#if report.reportType !== 'expense'}<td class="num amount income">{formatINR(head.income)}</td>{/if}
+								{#if report.reportType !== 'income'}<td class="num amount expense">{formatINR(head.expense)}</td>{/if}
+								{#if report.reportType === 'combined'}<td class="num amount">{formatINR(head.net)}</td>{/if}
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	{/if}
+
+	{#each sections as section (section.side)}
+		{#if section.sources.length > 0}
+		<section class="card source-section">
+				<div class="sources">
+					<h3>{section.title} by source</h3>
+					<table class="table compact">
+						<thead><tr><th>Source</th><th class="share-col">Share</th><th class="num">Amount</th></tr></thead>
+						<tbody>
+							{#each section.sources as item}
+								<tr>
+									<td class="primary">{labelize(item.source)}</td>
+									<td class="share-col">
+										<span class="share">
+											<span class="bar"><span style="width: {Math.max(2, item.share * 100)}%; background: var(--series-{section.side})"></span></span>
+											<span class="num muted">{(item.share * 100).toFixed(1)}%</span>
+										</span>
+									</td>
+									<td class="num amount {section.side}">{formatINR(item.total)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+		</section>
+		{/if}
+	{/each}
 
 	{#each sections as section (section.side)}
 		<section class="card report-section">
 			<div class="card-header">
 				<div>
 					<h2>{section.title}</h2>
-					<p class="no-print">Entity cumulative is a running total per entity in date order, regardless of display order.</p>
+					{#if showEntityCumulative}<p class="no-print">Entity cumulative is a running total per entity in date order, regardless of display order.</p>{/if}
 				</div>
 				<div class="chip-row no-print">
 					{#each COLUMN_DEFS as column}
 						<button type="button" class="toggle-chip" class:on={columns[section.side][column.key]} aria-pressed={columns[section.side][column.key]} on:click={() => toggleColumn(section.side, column.key)}>{column.label}</button>
 					{/each}
+					<label class="check entity-comments-toggle">
+						<input type="checkbox" bind:checked={showEntityCumulative} />
+						Entity cumulative
+					</label>
+					<label class="check entity-comments-toggle">
+						<input type="checkbox" bind:checked={showEntityType} />
+						Entity type
+					</label>
+					<label class="check entity-comments-toggle">
+						<input type="checkbox" bind:checked={showEntityComments} />
+						Entity comments
+					</label>
 				</div>
 			</div>
 			<div class="table-wrap">
@@ -278,7 +361,7 @@
 							{#if columns[section.side].source}<th>Source</th>{/if}
 							{#if columns[section.side].head}<th>Master balance</th>{/if}
 							<th class="num">Amount</th>
-							<th class="num">Entity cumulative</th>
+							{#if showEntityCumulative}<th class="num">Entity cumulative</th>{/if}
 							<th>Comments</th>
 						</tr>
 					</thead>
@@ -286,13 +369,21 @@
 						{#each section.rows as row (row.id)}
 							<tr>
 								<td class="nowrap">{formatShortDate(row.date)}</td>
-								<td class="primary">{row.entity_name || '—'}</td>
+								<td class="primary">
+									{row.entity_name || '—'}
+									{#if (showEntityType && row.entity_type) || (showEntityComments && row.entity_comments)}
+										<span class="cell-sub">
+											{#if showEntityType && row.entity_type}{labelize(row.entity_type)}{/if}
+											{#if showEntityComments && row.entity_comments}({row.entity_comments}){/if}
+										</span>
+									{/if}
+								</td>
 								{#if columns[section.side].projects}<td>{row.project_names || '—'}</td>{/if}
 								{#if columns[section.side].type}<td>{labelize(row.payment_mode)}</td>{/if}
 								{#if columns[section.side].source}<td>{labelize(row.source)}</td>{/if}
 								{#if columns[section.side].head}<td>{row.head_name || row.master_owner}</td>{/if}
-								<td class="num amount">{formatINR(row.amount)}</td>
-								<td class="num muted">{formatINR(row.entity_cumulative)}</td>
+								<td class="num amount {section.side}">{formatINR(row.amount)}</td>
+								{#if showEntityCumulative}<td class="num {section.side}">{formatINR(row.entity_cumulative)}</td>{/if}
 								<td class="comments">{row.comments || '—'}</td>
 							</tr>
 						{:else}
@@ -303,36 +394,13 @@
 						<tfoot>
 							<tr>
 								<td colspan={2 + Object.values(columns[section.side]).filter(Boolean).length}>Total · {plural(section.rows.length, 'entry', 'entries')}</td>
-								<td class="num amount">{formatINR(section.total)}</td>
-								<td colspan="2"></td>
+								<td class="num amount {section.side}">{formatINR(section.total)}</td>
+								<td colspan={showEntityCumulative ? 2 : 1}></td>
 							</tr>
 						</tfoot>
 					{/if}
 				</table>
 			</div>
-
-			{#if section.sources.length > 0}
-				<div class="sources">
-					<h3>By source</h3>
-					<table class="table compact">
-						<thead><tr><th>Source</th><th class="share-col">Share</th><th class="num">Amount</th></tr></thead>
-						<tbody>
-							{#each section.sources as item}
-								<tr>
-									<td class="primary">{labelize(item.source)}</td>
-									<td class="share-col">
-										<span class="share">
-											<span class="bar"><span style="width: {Math.max(2, item.share * 100)}%; background: var(--series-{section.side})"></span></span>
-											<span class="num muted">{(item.share * 100).toFixed(1)}%</span>
-										</span>
-									</td>
-									<td class="num amount">{formatINR(item.total)}</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			{/if}
 		</section>
 	{/each}
 {/if}
@@ -352,6 +420,18 @@
 	}
 	.nowrap {
 		white-space: nowrap;
+	}
+	.income {
+		color: var(--pos);
+	}
+	.expense {
+		color: var(--neg);
+	}
+	.table td.income {
+		color: var(--pos);
+	}
+	.table td.expense {
+		color: var(--neg);
 	}
 	.comments {
 		color: var(--muted);
@@ -387,6 +467,16 @@
 	.print-only {
 		display: none;
 	}
+	.letterhead-project {
+		font-size: 12pt;
+		margin: 1mm 0;
+	}
+	.entity-comments-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		cursor: pointer;
+	}
 
 	@page {
 		size: A4 portrait;
@@ -395,6 +485,10 @@
 	@media print {
 		.print-only {
 			display: flex;
+		}
+		.heads-section,
+		.source-section {
+			break-inside: avoid;
 		}
 		.letterhead {
 			justify-content: space-between;
@@ -411,7 +505,7 @@
 			text-align: right;
 		}
 		.summary {
-			grid-template-columns: repeat(3, 1fr);
+			grid-template-columns: repeat(var(--kpi-count, 3), 1fr);
 			gap: 3mm;
 		}
 		.summary .kpi {

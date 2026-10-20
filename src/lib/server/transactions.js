@@ -73,6 +73,7 @@ const selectSql = (config) => `
 		ent.name AS entity_name,
 		ent.entity_type,
 		ent.entity_code,
+		ent.comments AS entity_comments,
 		(SELECT GROUP_CONCAT(l.project_id) FROM ${config.link} l WHERE l.${config.linkFk} = t.id) AS project_ids_csv,
 		(SELECT GROUP_CONCAT(p.property_name, ', ') FROM ${config.link} l JOIN projects p ON p.id = l.project_id WHERE l.${config.linkFk} = t.id) AS project_names,
 		a.account_holder,

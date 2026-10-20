@@ -46,7 +46,8 @@
 	const keys = {
 		date: companyKey(`${kind}-form-date`),
 		project: companyKey('default-project'),
-		columns: `ledger:${kind}-columns`
+		columns: `ledger:${kind}-columns`,
+		entityComments: `ledger:${kind}-entity-comments`
 	};
 
 	let entities = [];
@@ -67,6 +68,7 @@
 	let applied = { ...EMPTY_FILTERS };
 	let showMoreFilters = false;
 	let columns = readColumns();
+	let showEntityComments = storage.get(keys.entityComments) === '1';
 
 	let form = blankForm();
 	let amountInput;
@@ -305,6 +307,7 @@
 		storage.set(keys.columns, JSON.stringify(columns));
 	};
 
+	$: storage.set(keys.entityComments, showEntityComments ? '1' : '0');
 	$: if (form.date) storage.set(keys.date, form.date);
 	// Remember the most recently picked project as the default for the next entry.
 	$: if (mastersLoaded && form.project_ids?.length) storage.set(keys.project, String(form.project_ids.at(-1)));
@@ -389,7 +392,7 @@
 				<span class="label">Entity</span>
 				<select class="select" bind:value={filters.entityId}>
 					<option value="all">All entities</option>
-					{#each entities as entity (entity.id)}<option value={String(entity.id)}>{entity.name}</option>{/each}
+					{#each entities as entity (entity.id)}<option value={String(entity.id)}>{entity.name} ({entity.entity_code})</option>{/each}
 				</select>
 			</label>
 			<label class="field">
@@ -466,6 +469,12 @@
 				{column.label}
 			</button>
 		{/each}
+		{#if isIncome}
+			<label class="check entity-comments-toggle">
+				<input type="checkbox" bind:checked={showEntityComments} />
+				Entity comments
+			</label>
+		{/if}
 	</div>
 
 	<div class="table-wrap">
@@ -509,7 +518,12 @@
 							{#if columns.timestamp}<td class="nowrap muted">{formatTimestamp(row.created_at)}</td>{/if}
 							<td class="primary">
 								{row.entity_name || '—'}
-								{#if row.entity_code}<span class="cell-sub">{labelize(row.entity_type)}</span>{/if}
+								{#if row.entity_code || (isIncome && showEntityComments && row.entity_comments)}
+									<span class="cell-sub">
+										{#if row.entity_code}{labelize(row.entity_type)}{/if}
+										{#if isIncome && showEntityComments && row.entity_comments}({row.entity_comments}){/if}
+									</span>
+								{/if}
 							</td>
 							{#if columns.projects}<td>{row.project_names || '—'}</td>{/if}
 							{#if columns.type}<td><span class="badge">{labelize(row.payment_mode)}</span></td>{/if}
@@ -642,6 +656,13 @@
 		align-items: center;
 		gap: 6px;
 		margin-right: 4px;
+	}
+	.entity-comments-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin-left: 8px;
+		cursor: pointer;
 	}
 	.nowrap {
 		white-space: nowrap;

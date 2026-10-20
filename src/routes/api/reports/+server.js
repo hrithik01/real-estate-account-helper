@@ -50,7 +50,7 @@ const loadRows = (kind, companyId, start, end, entityIds, projectIds) => {
 	return db
 		.prepare(
 			`SELECT t.id, t.date, t.created_at, t.amount, t.entity_id, t.payment_mode, t.${config.sourceField} AS source,
-				t.master_owner, h.name AS head_name, t.comments, ent.name AS entity_name, a.account_holder,
+				t.master_owner, h.name AS head_name, t.comments, ent.name AS entity_name, ent.entity_type, ent.comments AS entity_comments, a.account_holder,
 				(SELECT GROUP_CONCAT(p.property_name, ', ') FROM ${config.link} l JOIN projects p ON p.id = l.project_id WHERE l.${config.linkFk} = t.id) AS project_names
 			 FROM ${config.table} t
 			 LEFT JOIN entities ent ON ent.id = t.entity_id
@@ -59,6 +59,24 @@ const loadRows = (kind, companyId, start, end, entityIds, projectIds) => {
 			 WHERE ${where}`
 		)
 		.all(...params);
+};
+
+/** Income, expense and net per master balance for the rows in the report. */
+const headTotals = (incomeRows, expenseRows) => {
+	const byCode = new Map();
+	const add = (rows, field) => {
+		for (const row of rows) {
+			const code = row.master_owner || '';
+			const entry = byCode.get(code) || { code, name: row.head_name || code || 'Unassigned', income: 0, expense: 0 };
+			entry[field] += Number(row.amount || 0);
+			byCode.set(code, entry);
+		}
+	};
+	add(incomeRows, 'income');
+	add(expenseRows, 'expense');
+	return [...byCode.values()]
+		.map((entry) => ({ ...entry, net: entry.income - entry.expense }))
+		.sort((left, right) => left.name.localeCompare(right.name));
 };
 
 export const GET = ({ url, locals }) => {
@@ -92,6 +110,7 @@ export const GET = ({ url, locals }) => {
 		total_income,
 		total_expense,
 		net: total_income - total_expense,
+		heads: headTotals(incomeRows, expenseRows),
 		rows: {
 			income: reportType === 'expense' ? [] : prepare(incomeRows),
 			expenses: reportType === 'income' ? [] : prepare(expenseRows)
