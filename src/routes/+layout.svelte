@@ -22,7 +22,8 @@
 				{ href: '/', label: 'Overview', icon: 'home' },
 				{ href: '/income', label: 'Income', icon: 'income' },
 				{ href: '/expenses', label: 'Expenses', icon: 'expense' },
-				{ href: '/finance', label: 'Finance', icon: 'finance' }
+				{ href: '/finance', label: 'Finance', icon: 'finance' },
+				{ href: '/sheets', label: 'Independent Sheets', icon: 'clipboard' }
 			]
 		},
 		{ section: 'Analyse', items: [{ href: '/reports', label: 'Reports', icon: 'report' }] },

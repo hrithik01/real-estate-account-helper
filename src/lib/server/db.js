@@ -201,6 +201,35 @@ CREATE INDEX IF NOT EXISTS idx_expense_projects_project_id ON expense_projects(p
 CREATE INDEX IF NOT EXISTS idx_ledger_heads_company ON ledger_heads(company_id);
 `;
 
+/*
+ * Independent sheets are standalone credit/debit books per entity. They are never
+ * read by income, expense, head-balance or report queries.
+ */
+const SHEETS_SQL = `
+CREATE TABLE IF NOT EXISTS independent_sheets (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+	entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+	title TEXT,
+	comments TEXT,
+	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS independent_sheet_entries (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	sheet_id INTEGER NOT NULL REFERENCES independent_sheets(id) ON DELETE CASCADE,
+	date TEXT NOT NULL,
+	entry_type TEXT NOT NULL CHECK (entry_type IN ('credit', 'debit')),
+	amount REAL NOT NULL CHECK (amount > 0),
+	remarks TEXT,
+	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_independent_sheets_company ON independent_sheets(company_id);
+CREATE INDEX IF NOT EXISTS idx_independent_sheets_entity ON independent_sheets(entity_id);
+CREATE INDEX IF NOT EXISTS idx_independent_sheet_entries_sheet ON independent_sheet_entries(sheet_id, date);
+`;
+
 const tableExists = (name) =>
 	Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
@@ -219,6 +248,7 @@ const createFreshSchema = () => {
 	}
 	db.exec(LINK_TABLES_SQL);
 	db.exec(INDEXES_SQL);
+	db.exec(SHEETS_SQL);
 };
 
 // Holders that existed when this was a single-company ledger (pre-v1 schema).
@@ -320,6 +350,7 @@ const migrateLegacyDatabase = () => {
 			);
 			db.exec('DROP TABLE IF EXISTS settings');
 			db.exec(INDEXES_SQL);
+			db.exec(SHEETS_SQL);
 
 			const problems = db.pragma('foreign_key_check');
 			if (problems.length > 0) {

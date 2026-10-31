@@ -31,7 +31,7 @@ export const parseId = (value) => {
 	return Number.isInteger(id) && id > 0 ? id : null;
 };
 
-const SCOPED = new Set(['accounts', 'projects', 'entities', 'income', 'expenses', 'finance_entries', 'ledger_heads']);
+const SCOPED = new Set(['accounts', 'projects', 'entities', 'income', 'expenses', 'finance_entries', 'ledger_heads', 'independent_sheets']);
 
 /** True when the row exists and belongs to the company. */
 export const ownsRow = (table, id, companyId) => {
