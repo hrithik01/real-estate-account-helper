@@ -22,8 +22,8 @@
 		{ key: 'lists', label: 'Custom lists', icon: 'list' }
 	];
 	const LIST_GROUPS = [
-		{ key: 'expense_sources', custom: 'custom_expense_sources', label: 'Expense sources', placeholder: 'e.g. service-contract' },
-		{ key: 'credit_sources', custom: 'custom_credit_sources', label: 'Credit sources', placeholder: 'e.g. investor' },
+		{ key: 'expense_sources', custom: 'custom_expense_sources', label: 'Expense categories', placeholder: 'e.g. service-contract' },
+		{ key: 'credit_sources', custom: 'custom_credit_sources', label: 'Credit categories', placeholder: 'e.g. investor' },
 		{ key: 'entity_types', custom: 'custom_entity_types', label: 'Entity types', placeholder: 'e.g. consultant' },
 		{ key: 'property_types', custom: 'custom_property_types', label: 'Property types', placeholder: 'e.g. commercial' }
 	];

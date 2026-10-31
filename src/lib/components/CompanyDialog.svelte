@@ -160,7 +160,7 @@
 							<option value={other.id}>{other.name}</option>
 						{/each}
 					</select>
-					<span class="hint">Copies custom sources, entity types and property types. Transactions are never copied.</span>
+					<span class="hint">Copies custom categories, entity types and property types. Transactions are never copied.</span>
 				</label>
 			{/if}
 		{/if}

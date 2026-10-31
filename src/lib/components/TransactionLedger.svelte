@@ -26,7 +26,7 @@
 		{ key: 'timestamp', label: 'Entered on' },
 		{ key: 'projects', label: 'Projects' },
 		{ key: 'type', label: 'Mode' },
-		{ key: 'source', label: 'Source' },
+		{ key: 'source', label: 'Category' },
 		{ key: 'head', label: 'Master balance' },
 		{ key: 'account', label: 'Account' }
 	];
@@ -166,7 +166,32 @@
 		}
 	};
 
+	/*
+	 * Expenses repeat the last *entered* expense (by entry time, not by its ledger date):
+	 * its date, source, projects and master balance carry over to the next form.
+	 */
+	const carryOver = (entry) => {
+		const source = entry[sourceField];
+		return {
+			date: entry.date,
+			[sourceField]: source || blankForm()[sourceField],
+			project_ids: (entry.project_ids || []).map(String).filter((id) => projects.some((project) => String(project.id) === id)),
+			master_owner: heads.some((head) => head.code === entry.master_owner) ? entry.master_owner : blankForm().master_owner
+		};
+	};
+
 	const initForm = async () => {
+		if (!isIncome) {
+			try {
+				const lastEntered = (await api(`${endpoint}?limit=1&sort=entered`)).rows[0];
+				if (/^\d{4}-\d{2}-\d{2}$/.test(lastEntered?.date || '')) {
+					form = { ...blankForm(), ...carryOver(lastEntered) };
+					return;
+				}
+			} catch {
+				/* fall through to the stored defaults */
+			}
+		}
 		// Default date: the latest entry's date, else the last date used here, else today.
 		let latestDate = '';
 		let latestProject = '';
@@ -206,7 +231,10 @@
 		try {
 			await api(endpoint, { method: 'POST', body: toPayload(form) });
 			toast.success(`${label} of ${formatINR(form.amount)} added`);
-			form = { ...blankForm(form.date), project_ids: defaultProject() };
+			// The entry just saved is now the last one entered, so expenses keep its choices.
+			form = isIncome
+				? { ...blankForm(form.date), project_ids: defaultProject() }
+				: { ...blankForm(), ...carryOver(form) };
 			page = 1;
 			await loadRows();
 			await tick();
@@ -278,10 +306,11 @@
 					{ label: 'Date', value: (row) => row.date },
 					{ label: 'Entity', value: (row) => row.entity_name },
 					{ label: 'Entity code', value: (row) => row.entity_code },
+					...(isIncome ? [] : [{ label: 'Comments', value: (row) => row.comments }]),
 					{ label: 'Projects', value: (row) => row.project_names },
 					{ label: 'Mode', value: (row) => row.payment_mode },
 					{ label: 'Account', value: (row) => (row.account_holder ? `${row.account_holder} (${row.bank_name})` : '') },
-					{ label: 'Source', value: (row) => row.source },
+					{ label: 'Category', value: (row) => row.source },
 					...(isIncome
 						? []
 						: [
@@ -291,7 +320,7 @@
 							]),
 					{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
 					{ label: 'Amount', value: (row) => row.amount },
-					{ label: 'Comments', value: (row) => row.comments },
+					...(isIncome ? [{ label: 'Comments', value: (row) => row.comments }] : []),
 					{ label: 'Entered on', value: (row) => row.created_at }
 				],
 				payload.rows
@@ -424,9 +453,9 @@
 					</select>
 				</label>
 				<label class="field">
-					<span class="label">Source</span>
+					<span class="label">Category</span>
 					<select class="select" bind:value={filters.source}>
-						<option value="all">All sources</option>
+						<option value="all">All categories</option>
 						{#each sources as source}<option value={source}>{labelize(source)}</option>{/each}
 					</select>
 				</label>
@@ -486,13 +515,14 @@
 					<th>Date</th>
 					{#if columns.timestamp}<th>Entered on</th>{/if}
 					<th>Entity</th>
+					{#if !isIncome}<th>Comments</th>{/if}
 					{#if columns.projects}<th>Projects</th>{/if}
 					{#if columns.type}<th>Mode</th>{/if}
-					{#if columns.source}<th>Source</th>{/if}
+					{#if columns.source}<th>Category</th>{/if}
 					{#if columns.head}<th>Master balance</th>{/if}
 					{#if columns.account}<th>Account</th>{/if}
 					<th class="num">Amount</th>
-					<th>Comments</th>
+					{#if isIncome}<th>Comments</th>{/if}
 					<th class="actions"><span class="sr-only">Actions</span></th>
 				</tr>
 			</thead>
@@ -527,6 +557,7 @@
 									</span>
 								{/if}
 							</td>
+							{#if !isIncome}<td class="comments"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>{/if}
 							{#if columns.projects}<td>{row.project_names || '—'}</td>{/if}
 							{#if columns.type}<td><span class="badge">{labelize(row.payment_mode)}</span></td>{/if}
 							{#if columns.source}
@@ -540,7 +571,7 @@
 							{#if columns.head}<td>{row.head_name || row.master_owner}</td>{/if}
 							{#if columns.account}<td>{row.account_holder ? `${row.account_holder}` : '—'}{#if row.bank_name}<span class="cell-sub">{row.bank_name}</span>{/if}</td>{/if}
 							<td class="num amount" class:pos={isIncome}>{formatINR(row.amount)}</td>
-							<td class="comments"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>
+							{#if isIncome}<td class="comments"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>{/if}
 							<td class="actions">
 								<span class="row-actions">
 									<button class="btn btn-ghost btn-icon btn-sm" type="button" aria-label="Edit entry" title="Edit" on:click={() => startEdit(row)}><Icon name="edit" size={15} /></button>

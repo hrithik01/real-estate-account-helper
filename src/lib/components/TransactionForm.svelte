@@ -146,7 +146,7 @@
 	</label>
 
 	<label class="field">
-		<span class="label">{kind === 'income' ? 'Credit source' : 'Expense source'}</span>
+		<span class="label">{kind === 'income' ? 'Credit category' : 'Expense category'}</span>
 		<select class="select" bind:value={value[sourceField]}>
 			{#each sourceOptions as source}
 				<option value={source}>{labelize(source)}</option>

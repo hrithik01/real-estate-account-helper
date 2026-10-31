@@ -20,10 +20,17 @@
 		{ key: 'last-3-years', label: 'Last 3 years' },
 		{ key: 'last-5-years', label: 'Last 5 years' }
 	];
+	const GROUP_OPTIONS = [
+		{ key: 'source', label: 'Category' },
+		{ key: 'entity_type', label: 'Entity type' },
+		{ key: 'entity', label: 'Entity' },
+		{ key: 'head', label: 'Master balance' },
+		{ key: 'payment_mode', label: 'Payment mode' }
+	];
 	const COLUMN_DEFS = [
 		{ key: 'projects', label: 'Projects' },
 		{ key: 'type', label: 'Mode' },
-		{ key: 'source', label: 'Source' },
+		{ key: 'source', label: 'Category' },
 		{ key: 'head', label: 'Master balance' }
 	];
 
@@ -32,6 +39,7 @@
 	let preset = '';
 	let reportType = 'combined';
 	let sortOrder = 'latest';
+	let groupBy = readGroupBy();
 	let entities = [];
 	let projects = [];
 	let selectedEntityIds = [];
@@ -42,6 +50,11 @@
 	let showEntityComments = storage.get('ledger:report-entity-comments') === '1';
 	let showEntityCumulative = storage.get('ledger:report-entity-cumulative') !== '0';
 	let showEntityType = storage.get('ledger:report-entity-type') !== '0';
+
+	function readGroupBy() {
+		const stored = storage.get('ledger:report-group-by', 'source');
+		return GROUP_OPTIONS.some((option) => option.key === stored) ? stored : 'source';
+	}
 
 	function readColumns() {
 		try {
@@ -85,31 +98,25 @@
 		endDate = toIsoDate(end);
 	};
 
-	const sourceTotals = (rows = []) => {
-		const totals = new Map();
-		for (const row of rows) {
-			const key = String(row.source || '').trim() || 'Unspecified';
-			totals.set(key, (totals.get(key) || 0) + Number(row.amount || 0));
-		}
-		const grand = [...totals.values()].reduce((sum, value) => sum + value, 0);
-		return [...totals.entries()]
-			.map(([source, total]) => ({ source, total, share: grand ? total / grand : 0 }))
-			.filter((item) => item.total !== 0)
-			.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
-	};
+	/** Names are shown as typed; slugs (category, entity type, mode) are prettified. */
+	const groupLabel = (group) => (group.raw ? group.label : labelize(group.label));
+	const crossTabLabel = (key) => (key === 'Unspecified' ? key : labelize(key));
+	const cell = (value) => (value ? formatINR(value) : '–');
 
 	$: entityOptions = entities.map((entity) => ({ value: String(entity.id), label: entity.name, hint: entity.entity_code }));
 	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name }));
 	$: sections = report
 		? [
 				...(report.reportType !== 'expense'
-					? [{ side: 'income', title: 'Income', rows: report.rows.income, total: report.total_income, sources: sourceTotals(report.rows.income) }]
+					? [{ side: 'income', title: 'Income', rows: report.rows.income, total: report.total_income, groups: report.groups.income, crossTab: report.cross_tab.income }]
 					: []),
 				...(report.reportType !== 'income'
-					? [{ side: 'expense', title: 'Expenses', rows: report.rows.expenses, total: report.total_expense, sources: sourceTotals(report.rows.expenses) }]
+					? [{ side: 'expense', title: 'Expenses', rows: report.rows.expenses, total: report.total_expense, groups: report.groups.expense, crossTab: report.cross_tab.expense }]
 					: [])
 			]
 		: [];
+	$: groupLabelText = GROUP_OPTIONS.find((option) => option.key === groupBy)?.label || 'Category';
+	$: storage.set('ledger:report-group-by', groupBy);
 	$: storage.set('ledger:report-entity-comments', showEntityComments ? '1' : '0');
 	$: storage.set('ledger:report-entity-cumulative', showEntityCumulative ? '1' : '0');
 	$: storage.set('ledger:report-entity-type', showEntityType ? '1' : '0');
@@ -132,6 +139,7 @@
 				end: endDate,
 				reportType,
 				sortOrder,
+				groupBy,
 				entityIds: selectedEntityIds.length ? selectedEntityIds.join(',') : 'all',
 				projectIds: selectedProjectIds.length ? selectedProjectIds.join(',') : 'all'
 			});
@@ -145,21 +153,41 @@
 
 	const exportCsv = () => {
 		const rows = sections.flatMap((section) => section.rows.map((row) => ({ ...row, side: section.side })));
+		const commentsColumn = { label: 'Comments', value: (row) => row.comments };
+		// Mixed exports keep Comments last; an expense-only export puts it after Entity like the report.
+		const expenseOnly = rows.length > 0 && rows.every((row) => row.side === 'expense');
 		downloadCsv(
 			`${slug(data.company.name)}-report-${report.start}-to-${report.end}.csv`,
 			[
 				{ label: 'Type', value: (row) => (row.side === 'income' ? 'Income' : 'Expense') },
 				{ label: 'Date', value: (row) => row.date },
 				{ label: 'Entity', value: (row) => row.entity_name },
+				...(expenseOnly ? [commentsColumn] : []),
 				{ label: 'Projects', value: (row) => row.project_names },
 				{ label: 'Mode', value: (row) => row.payment_mode },
-				{ label: 'Source', value: (row) => row.source },
+				{ label: 'Category', value: (row) => row.source },
 				{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
 				{ label: 'Amount', value: (row) => row.amount },
 				{ label: 'Entity cumulative', value: (row) => row.entity_cumulative },
-				{ label: 'Comments', value: (row) => row.comments }
+				...(expenseOnly ? [] : [commentsColumn])
 			],
 			rows
+		);
+	};
+
+	const exportCrossTab = (section) => {
+		const table = section.crossTab;
+		downloadCsv(
+			`${slug(data.company.name)}-${section.side}-entity-type-by-category-${report.start}-to-${report.end}.csv`,
+			[
+				{ label: 'Entity type', value: (row) => crossTabLabel(row.key) },
+				...table.columns.map((column, index) => ({ label: crossTabLabel(column), value: (row) => row.cells[index] })),
+				{ label: 'Total', value: (row) => row.total }
+			],
+			[
+				...table.rows,
+				{ key: 'Total', cells: table.column_totals, total: table.total }
+			]
 		);
 	};
 
@@ -178,7 +206,7 @@
 	<div>
 		<p class="eyebrow">{data.company.name}</p>
 		<h1>Reports</h1>
-		<p>Income, expense or combined statements with entity running totals and source breakdowns.</p>
+		<p>Income, expense or combined statements with entity running totals and category breakdowns.</p>
 	</div>
 	<div class="page-actions">
 		<button class="btn" type="button" on:click={exportCsv} disabled={!report}><Icon name="download" size={15} /> Export CSV</button>
@@ -299,16 +327,24 @@
 	{/if}
 
 	{#each sections as section (section.side)}
-		{#if section.sources.length > 0}
+		{#if section.groups.length > 0}
 		<section class="card source-section">
 				<div class="sources">
-					<h3>{section.title} by source</h3>
+					<div class="summary-head">
+						<h3>{section.title} by {groupLabelText.toLowerCase()}</h3>
+						<label class="group-by no-print">
+							<span class="label">Group by</span>
+							<select class="select" bind:value={groupBy} on:change={runReport} disabled={running}>
+								{#each GROUP_OPTIONS as option}<option value={option.key}>{option.label}</option>{/each}
+							</select>
+						</label>
+					</div>
 					<table class="table compact">
-						<thead><tr><th>Source</th><th class="share-col">Share</th><th class="num">Amount</th></tr></thead>
+						<thead><tr><th>{groupLabelText}</th><th class="share-col">Share</th><th class="num">Amount</th></tr></thead>
 						<tbody>
-							{#each section.sources as item}
+							{#each section.groups as item (item.key)}
 								<tr>
-									<td class="primary">{labelize(item.source)}</td>
+									<td class="primary">{groupLabel(item)}</td>
 									<td class="share-col">
 										<span class="share">
 											<span class="bar"><span style="width: {Math.max(2, item.share * 100)}%; background: var(--series-{section.side})"></span></span>
@@ -320,6 +356,41 @@
 							{/each}
 						</tbody>
 					</table>
+
+					{#if section.crossTab && section.crossTab.rows.length > 0}
+						<details class="cross-tab no-print">
+							<summary>Entity type × category</summary>
+							<p class="hint">Where each kind of party was paid or received for. Many filled cells in one row means category adds detail beyond entity type.</p>
+							<div class="table-wrap">
+								<table class="table compact">
+									<thead>
+										<tr>
+											<th>Entity type</th>
+											{#each section.crossTab.columns as column}<th class="num">{crossTabLabel(column)}</th>{/each}
+											<th class="num">Total</th>
+										</tr>
+									</thead>
+									<tbody>
+										{#each section.crossTab.rows as row (row.key)}
+											<tr>
+												<td class="primary">{crossTabLabel(row.key)}</td>
+												{#each row.cells as value}<td class="num {value ? section.side : 'muted'}">{cell(value)}</td>{/each}
+												<td class="num amount {section.side}">{formatINR(row.total)}</td>
+											</tr>
+										{/each}
+									</tbody>
+									<tfoot>
+										<tr>
+											<td>Total</td>
+											{#each section.crossTab.column_totals as value}<td class="num amount {section.side}">{formatINR(value)}</td>{/each}
+											<td class="num amount {section.side}">{formatINR(section.crossTab.total)}</td>
+										</tr>
+									</tfoot>
+								</table>
+							</div>
+							<button class="btn" type="button" on:click={() => exportCrossTab(section)}><Icon name="download" size={15} /> Export cross-tab CSV</button>
+						</details>
+					{/if}
 				</div>
 		</section>
 		{/if}
@@ -356,13 +427,14 @@
 						<tr>
 							<th>Date</th>
 							<th>Entity</th>
+							{#if section.side === 'expense'}<th>Comments</th>{/if}
 							{#if columns[section.side].projects}<th>Projects</th>{/if}
 							{#if columns[section.side].type}<th>Mode</th>{/if}
-							{#if columns[section.side].source}<th>Source</th>{/if}
+							{#if columns[section.side].source}<th>Category</th>{/if}
 							{#if columns[section.side].head}<th>Master balance</th>{/if}
 							<th class="num">Amount</th>
 							{#if showEntityCumulative}<th class="num">Entity cumulative</th>{/if}
-							<th>Comments</th>
+							{#if section.side !== 'expense'}<th>Comments</th>{/if}
 						</tr>
 					</thead>
 					<tbody>
@@ -378,13 +450,14 @@
 										</span>
 									{/if}
 								</td>
+								{#if section.side === 'expense'}<td class="comments">{row.comments || '—'}</td>{/if}
 								{#if columns[section.side].projects}<td>{row.project_names || '—'}</td>{/if}
 								{#if columns[section.side].type}<td>{labelize(row.payment_mode)}</td>{/if}
 								{#if columns[section.side].source}<td>{labelize(row.source)}</td>{/if}
 								{#if columns[section.side].head}<td>{row.head_name || row.master_owner}</td>{/if}
 								<td class="num amount {section.side}">{formatINR(row.amount)}</td>
 								{#if showEntityCumulative}<td class="num {section.side}">{formatINR(row.entity_cumulative)}</td>{/if}
-								<td class="comments">{row.comments || '—'}</td>
+								{#if section.side !== 'expense'}<td class="comments">{row.comments || '—'}</td>{/if}
 							</tr>
 						{:else}
 							<tr><td colspan="9"><div class="empty"><h3>No {section.title.toLowerCase()} in this period</h3></div></td></tr>
@@ -393,9 +466,11 @@
 					{#if section.rows.length > 0}
 						<tfoot>
 							<tr>
-								<td colspan={2 + Object.values(columns[section.side]).filter(Boolean).length}>Total · {plural(section.rows.length, 'entry', 'entries')}</td>
+								<td colspan={2 + (section.side === 'expense' ? 1 : 0) + Object.values(columns[section.side]).filter(Boolean).length}>Total · {plural(section.rows.length, 'entry', 'entries')}</td>
 								<td class="num amount {section.side}">{formatINR(section.total)}</td>
-								<td colspan={showEntityCumulative ? 2 : 1}></td>
+								{#if showEntityCumulative || section.side !== 'expense'}
+									<td colspan={(showEntityCumulative ? 1 : 0) + (section.side === 'expense' ? 0 : 1)}></td>
+								{/if}
 							</tr>
 						</tfoot>
 					{/if}
@@ -443,6 +518,32 @@
 	}
 	.sources h3 {
 		margin-bottom: 8px;
+	}
+	.summary-head {
+		display: flex;
+		align-items: flex-end;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+	.group-by {
+		display: grid;
+		gap: 4px;
+	}
+	.cross-tab {
+		margin-top: 16px;
+		padding-top: 12px;
+		border-top: 1px solid var(--border);
+	}
+	.cross-tab summary {
+		cursor: pointer;
+		font-weight: 600;
+	}
+	.cross-tab .hint {
+		margin: 8px 0;
+	}
+	.cross-tab .btn {
+		margin-top: 12px;
 	}
 	.share-col {
 		width: 40%;

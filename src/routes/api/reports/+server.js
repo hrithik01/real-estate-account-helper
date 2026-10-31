@@ -79,6 +79,70 @@ const headTotals = (incomeRows, expenseRows) => {
 		.sort((left, right) => left.name.localeCompare(right.name));
 };
 
+/**
+ * Ways the report summary can be grouped. `key` identifies a group, `label` is what it shows;
+ * `raw` labels (names) are displayed as-is, the rest are slugs the client prettifies.
+ * Project is deliberately absent: a transaction can span several projects, so grouping by it would double count.
+ */
+const GROUPERS = {
+	source: (row) => ({ key: row.source, label: row.source, raw: false }),
+	entity_type: (row) => ({ key: row.entity_type, label: row.entity_type, raw: false }),
+	entity: (row) => ({ key: row.entity_id ? `e${row.entity_id}` : '', label: row.entity_name, raw: true }),
+	head: (row) => ({ key: row.master_owner, label: row.head_name || row.master_owner, raw: true }),
+	payment_mode: (row) => ({ key: row.payment_mode, label: row.payment_mode, raw: false })
+};
+const UNSPECIFIED = 'Unspecified';
+
+const cleanGroup = (group) => {
+	const key = String(group.key || '').trim() || UNSPECIFIED;
+	return { key, label: String(group.label || '').trim() || UNSPECIFIED, raw: group.raw || key === UNSPECIFIED };
+};
+
+/** Total and share per group, largest first. Groups that net to zero are dropped. */
+const groupTotals = (rows, groupBy) => {
+	const totals = new Map();
+	for (const row of rows) {
+		const group = cleanGroup(GROUPERS[groupBy](row));
+		const entry = totals.get(group.key) || { ...group, total: 0 };
+		entry.total += Number(row.amount || 0);
+		totals.set(group.key, entry);
+	}
+	const grand = [...totals.values()].reduce((sum, entry) => sum + entry.total, 0);
+	return [...totals.values()]
+		.filter((entry) => entry.total !== 0)
+		.map((entry) => ({ ...entry, share: grand ? entry.total / grand : 0 }))
+		.sort((left, right) => Math.abs(right.total) - Math.abs(left.total));
+};
+
+/** Entity type (rows) by category (columns). Both axes are ordered largest first. */
+const crossTab = (rows) => {
+	const cells = new Map();
+	const rowTotals = new Map();
+	const columnTotals = new Map();
+	let grand = 0;
+	for (const row of rows) {
+		const type = cleanGroup(GROUPERS.entity_type(row)).key;
+		const category = cleanGroup(GROUPERS.source(row)).key;
+		const amount = Number(row.amount || 0);
+		cells.set(`${type}\u0000${category}`, (cells.get(`${type}\u0000${category}`) || 0) + amount);
+		rowTotals.set(type, (rowTotals.get(type) || 0) + amount);
+		columnTotals.set(category, (columnTotals.get(category) || 0) + amount);
+		grand += amount;
+	}
+	const order = (totals) => [...totals.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([key]) => key);
+	const columns = order(columnTotals);
+	return {
+		columns,
+		column_totals: columns.map((column) => columnTotals.get(column)),
+		rows: order(rowTotals).map((type) => ({
+			key: type,
+			total: rowTotals.get(type),
+			cells: columns.map((column) => cells.get(`${type}\u0000${column}`) || 0)
+		})),
+		total: grand
+	};
+};
+
 export const GET = ({ url, locals }) => {
 	const companyId = requireCompanyId(locals);
 	const start = url.searchParams.get('start');
@@ -87,10 +151,12 @@ export const GET = ({ url, locals }) => {
 	const sortOrder = url.searchParams.get('sortOrder') === 'oldest' ? 'oldest' : 'latest';
 	const entityIds = parseIds(url.searchParams.get('entityIds') || url.searchParams.get('entityId') || 'all');
 	const projectIds = parseIds(url.searchParams.get('projectIds') || 'all');
+	const groupBy = url.searchParams.get('groupBy') || 'source';
 
 	if (!start || !end) error(400, 'Start and end dates are required.');
 	if (start > end) error(400, 'Start date must be on or before the end date.');
 	if (!['income', 'expense', 'combined'].includes(reportType)) error(400, 'Invalid report type.');
+	if (!Object.hasOwn(GROUPERS, groupBy)) error(400, 'Invalid grouping.');
 
 	// Totals always cover both sides so the net figure stays meaningful for single-sided reports.
 	const incomeRows = loadRows('income', companyId, start, end, entityIds, projectIds);
@@ -105,12 +171,21 @@ export const GET = ({ url, locals }) => {
 		end,
 		reportType,
 		sortOrder,
+		groupBy,
 		entityIds,
 		projectIds,
 		total_income,
 		total_expense,
 		net: total_income - total_expense,
 		heads: headTotals(incomeRows, expenseRows),
+		groups: {
+			income: reportType === 'expense' ? [] : groupTotals(incomeRows, groupBy),
+			expense: reportType === 'income' ? [] : groupTotals(expenseRows, groupBy)
+		},
+		cross_tab: {
+			income: reportType === 'expense' ? null : crossTab(incomeRows),
+			expense: reportType === 'income' ? null : crossTab(expenseRows)
+		},
 		rows: {
 			income: reportType === 'expense' ? [] : prepare(incomeRows),
 			expenses: reportType === 'income' ? [] : prepare(expenseRows)

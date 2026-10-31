@@ -57,6 +57,10 @@ export const compareRowsByDate = (left, right, direction = 'latest') => {
 	return (Number(left.id || 0) - Number(right.id || 0)) * multiplier;
 };
 
+/** Newest entered first, ignoring the ledger date (created_at has second precision, so id breaks ties). */
+const compareRowsByEntered = (left, right) =>
+	String(right.created_at || '').localeCompare(String(left.created_at || '')) || Number(right.id || 0) - Number(left.id || 0);
+
 const adjustAccountBalance = (accountId, delta, companyId) => {
 	if (!accountId || !Number.isFinite(delta) || delta === 0) return;
 	db.prepare('UPDATE accounts SET account_balance = account_balance + ? WHERE id = ? AND company_id = ?').run(
@@ -171,7 +175,7 @@ export const listTransactions = (kind, companyId, searchParams) => {
 			}
 			return true;
 		})
-		.sort((left, right) => compareRowsByDate(left, right, 'latest'));
+		.sort(get('sort') === 'entered' ? compareRowsByEntered : (left, right) => compareRowsByDate(left, right, 'latest'));
 
 	const totalCount = rows.length;
 	const totalAmount = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
@@ -210,7 +214,7 @@ const validate = (config, companyId, body, existing = null) => {
 
 	const allowedSources = getMasterOptions(companyId)[config.optionsKey];
 	const keepsExistingSource = existing && existing[config.sourceField] === source;
-	if (!allowedSources.includes(source) && !keepsExistingSource) error(400, `Invalid ${config.label.toLowerCase()} source.`);
+	if (!allowedSources.includes(source) && !keepsExistingSource) error(400, `Invalid ${config.label.toLowerCase()} category.`);
 	if (!codes.includes(master_owner)) error(400, 'Select a valid master balance.');
 
 	const subtypes = {};
