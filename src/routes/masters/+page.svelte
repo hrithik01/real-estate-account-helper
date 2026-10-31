@@ -37,8 +37,8 @@
 	let newListValues = {};
 
 	let entitySearch = '';
-	let filterEntityType = 'all';
-	let filterEntityProjectId = 'all';
+	let filterEntityTypes = [];
+	let filterEntityProjectIds = [];
 	let showProjectOwner = storage.get('ledger-project-owner') === '1';
 	let showProjectRecord = storage.get('ledger-project-record') === '1';
 
@@ -48,10 +48,11 @@
 
 	$: tab = TABS.some((item) => item.key === $page.url.searchParams.get('tab')) ? $page.url.searchParams.get('tab') : 'accounts';
 	$: counts = { accounts: accounts.length, projects: projects.length, entities: entities.length, balances: heads.length };
+	$: entityTypeFilterOptions = options.entity_types.map((type) => ({ value: type, label: labelize(type) }));
 	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name, hint: project.property_location }));
 	$: filteredEntities = entities.filter((entity) => {
-		if (filterEntityType !== 'all' && entity.entity_type !== filterEntityType) return false;
-		if (filterEntityProjectId !== 'all' && !(entity.project_ids || []).map(String).includes(filterEntityProjectId)) return false;
+		if (filterEntityTypes.length > 0 && !filterEntityTypes.includes(entity.entity_type)) return false;
+		if (filterEntityProjectIds.length > 0 && !(entity.project_ids || []).some((id) => filterEntityProjectIds.includes(String(id)))) return false;
 		if (entitySearch && !`${entity.name} ${entity.comments || ''} ${entity.entity_code}`.toLowerCase().includes(entitySearch.toLowerCase())) return false;
 		return true;
 	});
@@ -279,20 +280,14 @@
 				<span class="label">Search</span>
 				<input class="input" bind:value={entitySearch} placeholder="Name, code or comment" />
 			</label>
-			<label class="field">
+			<div class="field">
 				<span class="label">Type</span>
-				<select class="select" bind:value={filterEntityType}>
-					<option value="all">All types</option>
-					{#each options.entity_types as type}<option value={type}>{labelize(type)}</option>{/each}
-				</select>
-			</label>
-			<label class="field">
+				<MultiSelect options={entityTypeFilterOptions} bind:value={filterEntityTypes} placeholder="All types" emptyLabel="No types yet." />
+			</div>
+			<div class="field">
 				<span class="label">Project</span>
-				<select class="select" bind:value={filterEntityProjectId}>
-					<option value="all">All projects</option>
-					{#each projects as project (project.id)}<option value={String(project.id)}>{project.property_name}</option>{/each}
-				</select>
-			</label>
+				<MultiSelect options={projectOptions} bind:value={filterEntityProjectIds} placeholder="All projects" emptyLabel="No projects yet." />
+			</div>
 		</div>
 		<div class="table-wrap">
 			<table class="table">

@@ -51,6 +51,7 @@
 	};
 
 	let entities = [];
+	let entityTypes = [];
 	let projects = [];
 	let accounts = [];
 	let sources = [];
@@ -143,6 +144,7 @@
 			api('/api/heads')
 		]);
 		entities = entityRows;
+		entityTypes = options.entity_types;
 		projects = projectRows;
 		accounts = accountRows;
 		sources = isIncome ? options.credit_sources : options.expense_sources;
@@ -343,7 +345,7 @@
 	</div>
 	<form class="card-body" on:submit|preventDefault={submit}>
 		{#if mastersLoaded && heads.length > 0}
-			<TransactionForm {kind} bind:value={form} bind:amountInput {entities} {projects} {accounts} {sources} {heads} idPrefix="new-{kind}" />
+			<TransactionForm {kind} bind:value={form} bind:amountInput {entities} {entityTypes} {projects} {accounts} {sources} {heads} idPrefix="new-{kind}" />
 			{#if entities.length === 0}
 				<p class="notice"><Icon name="info" size={14} /> Add an entity in <a href="/masters?tab=entities">Masters</a> before recording entries.</p>
 			{/if}
@@ -560,7 +562,7 @@
 <Modal open={Boolean(editing)} title="Edit {label.toLowerCase()}" description={editing ? `Entry #${editing.id} · entered ${formatTimestamp(editing.created_at)}` : ''} width="760px" on:close={() => (editing = null)}>
 	{#if draft}
 		<form id="edit-{kind}" on:submit|preventDefault={saveEdit}>
-			<TransactionForm {kind} bind:value={draft} {entities} {projects} {accounts} {sources} {heads} idPrefix="edit-{kind}" />
+			<TransactionForm {kind} bind:value={draft} {entities} {entityTypes} {projects} {accounts} {sources} {heads} idPrefix="edit-{kind}" />
 		</form>
 	{/if}
 	<svelte:fragment slot="footer">

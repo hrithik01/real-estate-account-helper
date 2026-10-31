@@ -9,12 +9,15 @@
 	export let placeholder = 'Select…';
 	export let emptyLabel = 'Nothing to choose from yet.';
 	export let id = undefined;
+	/** When set (e.g. "types"), long selections read "All types" / "9 of 11 types". */
+	export let noun = '';
 
 	const dispatch = createEventDispatcher();
 	let open = false;
 	let query = '';
 	let root;
 	let searchInput;
+	let allCheckbox;
 
 	$: selected = (value || []).map(String);
 	$: selectedOptions = options.filter((option) => selected.includes(String(option.value)));
@@ -24,13 +27,31 @@
 	$: summary =
 		selectedOptions.length === 0
 			? placeholder
-			: selectedOptions.length <= 2
-				? selectedOptions.map((option) => option.label).join(', ')
-				: `${selectedOptions[0].label} +${selectedOptions.length - 1} more`;
+			: noun && selectedOptions.length === options.length
+				? `All ${noun}`
+				: selectedOptions.length <= 2
+					? selectedOptions.map((option) => option.label).join(', ')
+					: noun
+						? `${selectedOptions.length} of ${options.length} ${noun}`
+						: `${selectedOptions[0].label} +${selectedOptions.length - 1} more`;
 
 	const toggle = (optionValue) => {
 		const key = String(optionValue);
 		value = selected.includes(key) ? selected.filter((item) => item !== key) : [...selected, key];
+		dispatch('change', value);
+	};
+
+	// Select all acts on the options currently listed, so it respects the search box.
+	$: filteredKeys = filtered.map((option) => String(option.value));
+	$: selectedInView = filteredKeys.filter((key) => selected.includes(key)).length;
+	$: allInView = filteredKeys.length > 0 && selectedInView === filteredKeys.length;
+	$: someInView = selectedInView > 0 && !allInView;
+	$: if (allCheckbox) allCheckbox.indeterminate = someInView;
+
+	const toggleAll = () => {
+		value = allInView
+			? selected.filter((key) => !filteredKeys.includes(key))
+			: [...selected, ...filteredKeys.filter((key) => !selected.includes(key))];
 		dispatch('change', value);
 	};
 
@@ -74,6 +95,12 @@
 				</div>
 			{/if}
 			<div class="list">
+				{#if filtered.length > 1}
+					<label class="option all">
+						<input bind:this={allCheckbox} type="checkbox" checked={allInView} on:change={toggleAll} />
+						<span class="label">{query ? 'Select all matching' : 'Select all'}</span>
+					</label>
+				{/if}
 				{#each filtered as option (option.value)}
 					<label class="option">
 						<input type="checkbox" checked={selected.includes(String(option.value))} on:change={() => toggle(option.value)} />
@@ -157,6 +184,12 @@
 	}
 	.option:hover {
 		background: var(--surface-2);
+	}
+	.option.all {
+		font-weight: 600;
+		border-bottom: 1px solid var(--border);
+		border-radius: 8px 8px 0 0;
+		margin-bottom: 4px;
 	}
 	.label {
 		flex: 1;

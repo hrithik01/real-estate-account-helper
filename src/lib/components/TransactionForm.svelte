@@ -2,11 +2,14 @@
 	// @ts-nocheck
 	import { MATERIAL_TYPE, PAYMENT_MODES, SERVICE_TYPE, UTILITY_TYPE } from '$lib/constants.js';
 	import { amountInWords, labelize } from '$lib/format.js';
+	import { companyKey, storage } from '$lib/api.js';
+	import EntitySelect from './EntitySelect.svelte';
 	import MultiSelect from './MultiSelect.svelte';
 
 	export let kind = 'income';
 	export let value;
 	export let entities = [];
+	export let entityTypes = [];
 	export let projects = [];
 	export let accounts = [];
 	export let sources = [];
@@ -14,19 +17,42 @@
 	export let idPrefix = 'txn';
 	export let amountInput = null;
 
+	// Income is mostly from customers and owners; expenses go to everyone else.
+	const INCOME_TYPES = ['customer', 'owner'];
+	const typesKey = companyKey(`${kind}-entity-types`);
+
+	const readStoredTypes = () => {
+		try {
+			const parsed = JSON.parse(storage.get(typesKey, 'null'));
+			return Array.isArray(parsed) ? parsed : null;
+		} catch {
+			return null;
+		}
+	};
+
+	let typeFilter = null; // null until chosen: then the saved or default selection applies
+	$: allTypes = entityTypes.length ? entityTypes : [...new Set(entities.map((entity) => entity.entity_type))];
+	$: if (typeFilter === null && allTypes.length > 0) {
+		typeFilter = readStoredTypes() ?? allTypes.filter((type) => (kind === 'income') === INCOME_TYPES.includes(type));
+	}
+	$: typeOptions = allTypes.map((type) => ({ value: type, label: labelize(type) }));
+
+	const onTypesChange = (event) => {
+		typeFilter = event.detail;
+		storage.set(typesKey, JSON.stringify(typeFilter));
+	};
+
 	$: sourceField = kind === 'income' ? 'credit_source' : 'expense_source';
 	$: showSubtypes = kind === 'expense' && /material|service|utility/i.test(value[sourceField] || '');
 	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name, hint: project.property_location }));
 	$: selectedProjects = (value.project_ids || []).map(String);
 	// Only offer entities attached to the chosen projects (the current choice always stays visible).
-	$: entityOptions =
-		selectedProjects.length === 0
-			? entities
-			: entities.filter(
-					(entity) =>
-						String(entity.id) === String(value.entity_id) ||
-						(entity.project_ids || []).map(String).some((id) => selectedProjects.includes(id))
-				);
+	$: entityOptions = entities.filter(
+		(entity) =>
+			String(entity.id) === String(value.entity_id) ||
+			(((typeFilter ?? allTypes).includes(entity.entity_type)) &&
+				(selectedProjects.length === 0 || (entity.project_ids || []).map(String).some((id) => selectedProjects.includes(id))))
+	);
 	// Keep a legacy source selectable while editing an entry that still uses it.
 	$: sourceOptions = value[sourceField] && !sources.includes(value[sourceField]) ? [value[sourceField], ...sources] : sources;
 	$: words = amountInWords(value.amount);
@@ -86,18 +112,19 @@
 		<MultiSelect id="{idPrefix}-projects" options={projectOptions} value={selectedProjects} placeholder="Any project" emptyLabel="No projects yet. Add them in Masters." on:change={onProjectsChange} />
 	</div>
 
-	<label class="field">
-		<span class="label">Entity <span class="req">*</span></span>
-		<select class="select" bind:value={value.entity_id} required>
-			<option value="">Select entity…</option>
-			{#each entityOptions as entity (entity.id)}
-				<option value={String(entity.id)}>{entity.name} ({entity.entity_code})</option>
-			{/each}
-		</select>
-		{#if selectedProjects.length > 0 && entityOptions.length < entities.length}
-			<span class="hint">Showing entities linked to the selected projects.</span>
-		{/if}
-	</label>
+	<div class="field">
+		<label class="label" for="{idPrefix}-entity-types">Show entity types</label>
+		<MultiSelect id="{idPrefix}-entity-types" options={typeOptions} value={typeFilter ?? []} noun="types" placeholder="No types" emptyLabel="No entity types yet." on:change={onTypesChange} />
+		<span class="hint">{kind === 'income' ? 'Customers and owners by default.' : 'Everyone except customers and owners by default.'}</span>
+	</div>
+
+	<div class="field">
+		<label class="label" for="{idPrefix}-entity">Entity <span class="req">*</span></label>
+		<EntitySelect id="{idPrefix}-entity" entities={entityOptions} bind:value={value.entity_id} emptyLabel="No entities match the selected types." />
+		<span class="hint">
+			{#if entityOptions.length < entities.length}Showing {entityOptions.length} of {entities.length} entities{selectedProjects.length > 0 ? ' for the selected projects and types' : ' for the selected types'}.{:else}&nbsp;{/if}
+		</span>
+	</div>
 
 	<div class="field">
 		<span class="label">Payment mode</span>
