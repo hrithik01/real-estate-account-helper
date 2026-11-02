@@ -35,13 +35,22 @@ const addEntityCumulative = (rows) => {
 	}));
 };
 
-const loadRows = (kind, companyId, start, end, entityIds, projectIds) => {
+const parseCodes = (raw) => {
+	if (!raw || raw === 'all') return [];
+	return [...new Set(String(raw).split(',').map((value) => value.trim()).filter(Boolean))];
+};
+
+const loadRows = (kind, companyId, start, end, entityIds, projectIds, masterCodes) => {
 	const config = KINDS[kind];
 	let where = 't.company_id = ? AND t.date BETWEEN ? AND ?';
 	const params = [companyId, start, end];
 	if (entityIds.length > 0) {
 		where += ` AND t.entity_id IN (${entityIds.map(() => '?').join(',')})`;
 		params.push(...entityIds);
+	}
+	if (masterCodes.length > 0) {
+		where += ` AND t.master_owner IN (${masterCodes.map(() => '?').join(',')})`;
+		params.push(...masterCodes);
 	}
 	if (projectIds.length > 0) {
 		where += ` AND EXISTS (SELECT 1 FROM ${config.link} l WHERE l.${config.linkFk} = t.id AND l.project_id IN (${projectIds.map(() => '?').join(',')}))`;
@@ -151,6 +160,7 @@ export const GET = ({ url, locals }) => {
 	const sortOrder = url.searchParams.get('sortOrder') === 'oldest' ? 'oldest' : 'latest';
 	const entityIds = parseIds(url.searchParams.get('entityIds') || url.searchParams.get('entityId') || 'all');
 	const projectIds = parseIds(url.searchParams.get('projectIds') || 'all');
+	const masterCodes = parseCodes(url.searchParams.get('masterCodes') || 'all');
 	const groupBy = url.searchParams.get('groupBy') || 'source';
 
 	if (!start || !end) error(400, 'Start and end dates are required.');
@@ -159,8 +169,8 @@ export const GET = ({ url, locals }) => {
 	if (!Object.hasOwn(GROUPERS, groupBy)) error(400, 'Invalid grouping.');
 
 	// Totals always cover both sides so the net figure stays meaningful for single-sided reports.
-	const incomeRows = loadRows('income', companyId, start, end, entityIds, projectIds);
-	const expenseRows = loadRows('expense', companyId, start, end, entityIds, projectIds);
+	const incomeRows = loadRows('income', companyId, start, end, entityIds, projectIds, masterCodes);
+	const expenseRows = loadRows('expense', companyId, start, end, entityIds, projectIds, masterCodes);
 	const total = (rows) => rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
 	const prepare = (rows) => addEntityCumulative(rows).sort((left, right) => compareRowsByDate(left, right, sortOrder));
 	const total_income = total(incomeRows);
@@ -174,6 +184,7 @@ export const GET = ({ url, locals }) => {
 		groupBy,
 		entityIds,
 		projectIds,
+		masterCodes,
 		total_income,
 		total_expense,
 		net: total_income - total_expense,

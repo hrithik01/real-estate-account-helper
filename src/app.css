@@ -522,6 +522,12 @@ input[type='date'].input {
 .table .num {
 	text-align: right;
 }
+.table .center {
+	text-align: center;
+}
+.table .center .cell-clamp {
+	margin-inline: auto;
+}
 .table td.primary {
 	color: var(--text);
 	font-weight: 550;

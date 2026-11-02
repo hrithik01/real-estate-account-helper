@@ -515,13 +515,17 @@
 					<th>Date</th>
 					{#if columns.timestamp}<th>Entered on</th>{/if}
 					<th>Entity</th>
-					{#if !isIncome}<th>Comments</th>{/if}
+					{#if !isIncome}
+						<th class="center">Comments</th>
+						<th class="num">Amount</th>
+						{#if columns.head}<th class="center">Master balance</th>{/if}
+					{/if}
 					{#if columns.projects}<th>Projects</th>{/if}
 					{#if columns.type}<th>Mode</th>{/if}
 					{#if columns.source}<th>Category</th>{/if}
-					{#if columns.head}<th>Master balance</th>{/if}
+					{#if isIncome && columns.head}<th>Master balance</th>{/if}
 					{#if columns.account}<th>Account</th>{/if}
-					<th class="num">Amount</th>
+					{#if isIncome}<th class="num">Amount</th>{/if}
 					{#if isIncome}<th>Comments</th>{/if}
 					<th class="actions"><span class="sr-only">Actions</span></th>
 				</tr>
@@ -557,7 +561,11 @@
 									</span>
 								{/if}
 							</td>
-							{#if !isIncome}<td class="comments"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>{/if}
+							{#if !isIncome}
+								<td class="comments center"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>
+								<td class="num amount">{formatINR(row.amount)}</td>
+								{#if columns.head}<td class="center">{row.head_name || row.master_owner}</td>{/if}
+							{/if}
 							{#if columns.projects}<td>{row.project_names || '—'}</td>{/if}
 							{#if columns.type}<td><span class="badge">{labelize(row.payment_mode)}</span></td>{/if}
 							{#if columns.source}
@@ -568,9 +576,9 @@
 									{/if}
 								</td>
 							{/if}
-							{#if columns.head}<td>{row.head_name || row.master_owner}</td>{/if}
+							{#if isIncome && columns.head}<td>{row.head_name || row.master_owner}</td>{/if}
 							{#if columns.account}<td>{row.account_holder ? `${row.account_holder}` : '—'}{#if row.bank_name}<span class="cell-sub">{row.bank_name}</span>{/if}</td>{/if}
-							<td class="num amount" class:pos={isIncome}>{formatINR(row.amount)}</td>
+							{#if isIncome}<td class="num amount pos">{formatINR(row.amount)}</td>{/if}
 							{#if isIncome}<td class="comments"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>{/if}
 							<td class="actions">
 								<span class="row-actions">
