@@ -9,6 +9,7 @@
 	import { toast } from '$lib/toast.js';
 	import Icon from './Icon.svelte';
 	import Modal from './Modal.svelte';
+	import MultiSelect from './MultiSelect.svelte';
 	import Pagination from './Pagination.svelte';
 	import TransactionForm from './TransactionForm.svelte';
 
@@ -34,11 +35,11 @@
 		q: '',
 		start: '',
 		end: '',
-		entityId: 'all',
+		entityIds: [],
 		projectId: 'all',
 		paymentMode: 'all',
-		source: 'all',
-		head: 'all',
+		categories: [],
+		masterCodes: [],
 		timestampFrom: '',
 		timestampTo: ''
 	};
@@ -61,6 +62,8 @@
 	let rows = [];
 	let pagination = { page: 1, totalPages: 1, totalCount: 0, totalAmount: 0 };
 	let page = 1;
+	let sort = 'date';
+	let rowsRequestId = 0;
 	let loading = true;
 	let saving = false;
 	let exporting = false;
@@ -128,9 +131,13 @@
 	};
 
 	const queryString = (extra = {}) => {
-		const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), ...extra });
+		const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort, ...extra });
 		for (const [key, value] of Object.entries(applied)) {
-			if (value && value !== 'all') params.set(key, value);
+			if (Array.isArray(value)) {
+				for (const item of value) params.append(key, item);
+			} else if (value && value !== 'all') {
+				params.set(key, value);
+			}
 		}
 		return params.toString();
 	};
@@ -153,16 +160,18 @@
 	};
 
 	const loadRows = async () => {
+		const requestId = ++rowsRequestId;
 		loading = true;
 		try {
 			const payload = await api(`${endpoint}?${queryString()}`);
+			if (requestId !== rowsRequestId) return;
 			rows = payload.rows;
 			pagination = payload.pagination;
 			page = pagination.page;
 		} catch (err) {
-			toast.error(err.message);
+			if (requestId === rowsRequestId) toast.error(err.message);
 		} finally {
-			loading = false;
+			if (requestId === rowsRequestId) loading = false;
 		}
 	};
 
@@ -216,6 +225,12 @@
 	const resetFilters = async () => {
 		filters = { ...EMPTY_FILTERS };
 		await applyFilters();
+	};
+
+	const changeSort = async (event) => {
+		sort = event.currentTarget.value;
+		page = 1;
+		await loadRows();
 	};
 
 	const changePage = async (event) => {
@@ -305,8 +320,11 @@
 				[
 					{ label: 'Date', value: (row) => row.date },
 					{ label: 'Entity', value: (row) => row.entity_name },
+					...(isIncome ? [] : [
+						{ label: 'Amount', value: (row) => row.amount },
+						{ label: 'Comments', value: (row) => row.comments }
+					]),
 					{ label: 'Entity code', value: (row) => row.entity_code },
-					...(isIncome ? [] : [{ label: 'Comments', value: (row) => row.comments }]),
 					{ label: 'Projects', value: (row) => row.project_names },
 					{ label: 'Mode', value: (row) => row.payment_mode },
 					{ label: 'Account', value: (row) => (row.account_holder ? `${row.account_holder} (${row.bank_name})` : '') },
@@ -319,8 +337,10 @@
 								{ label: 'Utility type', value: (row) => row.utility_type }
 							]),
 					{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
-					{ label: 'Amount', value: (row) => row.amount },
-					...(isIncome ? [{ label: 'Comments', value: (row) => row.comments }] : []),
+					...(isIncome ? [
+						{ label: 'Amount', value: (row) => row.amount },
+						{ label: 'Comments', value: (row) => row.comments }
+					] : []),
 					{ label: 'Entered on', value: (row) => row.created_at }
 				],
 				payload.rows
@@ -338,13 +358,18 @@
 		storage.set(keys.columns, JSON.stringify(columns));
 	};
 
+	const isFilterActive = (value) => Array.isArray(value) ? value.length > 0 : Boolean(value && value !== 'all');
+
+	$: entityOptions = entities.map((entity) => ({ value: String(entity.id), label: entity.name, hint: entity.entity_code }));
+	$: categoryOptions = sources.map((source) => ({ value: source, label: labelize(source) }));
+	$: masterOptions = heads.map((head) => ({ value: head.code, label: head.name, hint: head.code }));
 	$: storage.set(keys.entityComments, showEntityComments ? '1' : '0');
 	$: if (form.date) storage.set(keys.date, form.date);
 	// Remember the most recently picked project as the default for the next entry.
 	$: if (mastersLoaded && form.project_ids?.length) storage.set(keys.project, String(form.project_ids.at(-1)));
 	$: pendingFilters = JSON.stringify(filters) !== JSON.stringify(applied);
-	$: activeFilterCount = Object.entries(applied).filter(([key, value]) => value && value !== 'all' && EMPTY_FILTERS[key] !== value).length;
-	$: extraFilterCount = ['paymentMode', 'source', 'head', 'timestampFrom', 'timestampTo'].filter((key) => filters[key] && filters[key] !== 'all').length;
+	$: activeFilterCount = Object.values(applied).filter(isFilterActive).length;
+	$: extraFilterCount = ['paymentMode', 'categories', 'timestampFrom', 'timestampTo'].filter((key) => isFilterActive(filters[key])).length;
 	$: visibleColumnCount = 4 + Object.values(columns).filter(Boolean).length;
 
 	onMount(async () => {
@@ -403,6 +428,14 @@
 			</p>
 		</div>
 		<div class="page-actions">
+			<label class="sort-control">
+				<span class="field-label">Sort by</span>
+				<select class="select" value={sort} on:change={changeSort}>
+					<option value="date">Date (latest first)</option>
+					<option value="entered">Entered on (latest first)</option>
+					<option value="amount">Amount (high to low)</option>
+				</select>
+			</label>
 			<button class="btn btn-sm" type="button" on:click={exportCsv} disabled={exporting || pagination.totalCount === 0}>
 				<Icon name="download" size={14} />
 				{exporting ? 'Exporting…' : 'Export CSV'}
@@ -419,13 +452,10 @@
 					<input class="input" bind:value={filters.q} placeholder="Comments, entity, project, amount…" />
 				</span>
 			</label>
-			<label class="field">
-				<span class="label">Entity</span>
-				<select class="select" bind:value={filters.entityId}>
-					<option value="all">All entities</option>
-					{#each entities as entity (entity.id)}<option value={String(entity.id)}>{entity.name} ({entity.entity_code})</option>{/each}
-				</select>
-			</label>
+			<div class="field">
+				<label class="field-label" for="{kind}-filter-entities">Entities</label>
+				<MultiSelect id="{kind}-filter-entities" options={entityOptions} bind:value={filters.entityIds} placeholder="All entities" />
+			</div>
 			<label class="field">
 				<span class="label">Project</span>
 				<select class="select" bind:value={filters.projectId}>
@@ -433,6 +463,10 @@
 					{#each projects as project (project.id)}<option value={String(project.id)}>{project.property_name}</option>{/each}
 				</select>
 			</label>
+			<div class="field">
+				<label class="field-label" for="{kind}-filter-masters">Master balances</label>
+				<MultiSelect id="{kind}-filter-masters" options={masterOptions} bind:value={filters.masterCodes} placeholder="All master balances" />
+			</div>
 			<label class="field">
 				<span class="label">Date from</span>
 				<input class="input" type="date" bind:value={filters.start} />
@@ -452,20 +486,10 @@
 						{#each PAYMENT_MODES as mode}<option value={mode}>{labelize(mode)}</option>{/each}
 					</select>
 				</label>
-				<label class="field">
-					<span class="label">Category</span>
-					<select class="select" bind:value={filters.source}>
-						<option value="all">All categories</option>
-						{#each sources as source}<option value={source}>{labelize(source)}</option>{/each}
-					</select>
-				</label>
-				<label class="field">
-					<span class="label">Master balance</span>
-					<select class="select" bind:value={filters.head}>
-						<option value="all">All</option>
-						{#each heads as head (head.id)}<option value={head.code}>{head.name}</option>{/each}
-					</select>
-				</label>
+				<div class="field">
+					<label class="field-label" for="{kind}-filter-categories">Categories</label>
+					<MultiSelect id="{kind}-filter-categories" options={categoryOptions} bind:value={filters.categories} placeholder="All categories" />
+				</div>
 				<label class="field">
 					<span class="label">Entered from</span>
 					<input class="input" type="date" bind:value={filters.timestampFrom} />
@@ -516,8 +540,8 @@
 					{#if columns.timestamp}<th>Entered on</th>{/if}
 					<th>Entity</th>
 					{#if !isIncome}
-						<th class="center">Comments</th>
 						<th class="num">Amount</th>
+						<th class="center">Comments</th>
 						{#if columns.head}<th class="center">Master balance</th>{/if}
 					{/if}
 					{#if columns.projects}<th>Projects</th>{/if}
@@ -562,8 +586,8 @@
 								{/if}
 							</td>
 							{#if !isIncome}
+								<td class="num amount neg">{formatINR(row.amount)}</td>
 								<td class="comments center"><span class="cell-clamp" title={row.comments || ''}>{row.comments || '—'}</span></td>
-								<td class="num amount">{formatINR(row.amount)}</td>
 								{#if columns.head}<td class="center">{row.head_name || row.master_owner}</td>{/if}
 							{/if}
 							{#if columns.projects}<td>{row.project_names || '—'}</td>{/if}
@@ -644,6 +668,15 @@
 	.card-header .amount {
 		color: var(--text);
 	}
+	.sort-control {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		white-space: nowrap;
+	}
+	.sort-control .select {
+		width: auto;
+	}
 	.filters {
 		padding: 16px 20px 12px;
 		border-bottom: 1px solid var(--border);
@@ -720,5 +753,8 @@
 	}
 	.table td.amount.pos {
 		color: var(--pos);
+	}
+	.table td.amount.neg {
+		color: var(--neg);
 	}
 </style>

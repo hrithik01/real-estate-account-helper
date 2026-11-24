@@ -26,6 +26,8 @@
 		{ key: 'source', label: 'Category' },
 		{ key: 'head', label: 'Master balance' }
 	];
+	const SIDES = ['income', 'expense'];
+	const blankFilters = () => ({ entityIds: [], projectIds: [], masterCodes: [], categories: [] });
 
 	let startDate = todayIso();
 	let endDate = todayIso();
@@ -35,9 +37,8 @@
 	let entities = [];
 	let projects = [];
 	let masters = [];
-	let selectedEntityIds = [];
-	let selectedProjectIds = [];
-	let selectedMasterCodes = [];
+	let categoryOptions = { income: [], expense: [] };
+	let filters = { income: blankFilters(), expense: blankFilters() };
 	let report = null;
 	let running = false;
 	let columns = readColumns();
@@ -90,6 +91,9 @@
 	const crossTabLabel = (key) => (key === 'Unspecified' ? key : labelize(key));
 	const cell = (value) => (value ? formatINR(value) : '–');
 
+	const reportSides = (type) => type === 'combined' ? SIDES : [type];
+	const categoryOptionsFor = (categories) => categories.map((category) => ({ value: category, label: labelize(category) }));
+
 	$: entityOptions = entities.map((entity) => ({ value: String(entity.id), label: entity.name, hint: entity.entity_code }));
 	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name }));
 	$: masterOptions = masters.map((head) => ({ value: head.code, label: head.name, hint: head.code }));
@@ -103,26 +107,27 @@
 					: [])
 			]
 		: [];
-	// Cells after Amount in the expense table: the optional columns plus entity cumulative.
-	$: expenseTrailingColumns = Object.values(columns.expense).filter(Boolean).length + (showEntityCumulative ? 1 : 0);
+	// Cells after Amount in the expense table: Comments, optional columns and entity cumulative.
+	$: expenseTrailingColumns = 1 + Object.values(columns.expense).filter(Boolean).length + (showEntityCumulative ? 1 : 0);
 	$: storage.set('ledger:report-entity-comments', showEntityComments ? '1' : '0');
 	$: storage.set('ledger:report-entity-cumulative', showEntityCumulative ? '1' : '0');
 	$: storage.set('ledger:report-entity-type', showEntityType ? '1' : '0');
-	$: reportProjectNames = report
-		? projects.filter((p) => report.projectIds.includes(p.id)).map((p) => p.property_name)
-		: [];
-	$: reportMasterNames = report
-		? masters.filter((m) => (report.masterCodes || []).includes(m.code)).map((m) => m.name)
-		: [];
-	$: filterSummary = [
-		selectedEntityIds.length ? `${selectedEntityIds.length} entit${selectedEntityIds.length === 1 ? 'y' : 'ies'}` : 'All entities',
-		selectedProjectIds.length
-			? projects.filter((p) => selectedProjectIds.includes(String(p.id))).map((p) => p.property_name).join(', ')
-			: 'All projects',
-		selectedMasterCodes.length
-			? masters.filter((m) => selectedMasterCodes.includes(m.code)).map((m) => m.name).join(', ')
-			: 'All master balances'
-	].join(' · ');
+	$: filterSummaries = report ? reportSides(report.reportType).map((side) => {
+		const { entityIds, projectIds, masterCodes, categories } = report.appliedFilters[side];
+		const projectNames = projects.filter((project) => projectIds.includes(project.id)).map((project) => project.property_name);
+		const masterNames = masters.filter((master) => masterCodes.includes(master.code)).map((master) => master.name);
+		return {
+			side,
+			projectNames,
+			masterNames,
+			text: [
+				entityIds.length ? plural(entityIds.length, 'entity', 'entities') : 'All entities',
+				projectNames.join(', ') || 'All projects',
+				masterNames.join(', ') || 'All master balances',
+				categories.map(labelize).join(', ') || 'All categories'
+			].join(' · ')
+		};
+	}) : [];
 
 	const runReport = async () => {
 		if (startDate > endDate) return toast.error('Start date must be on or before the end date.');
@@ -132,11 +137,16 @@
 				start: startDate,
 				end: endDate,
 				reportType,
-				sortOrder,
-				entityIds: selectedEntityIds.length ? selectedEntityIds.join(',') : 'all',
-				projectIds: selectedProjectIds.length ? selectedProjectIds.join(',') : 'all',
-				masterCodes: selectedMasterCodes.length ? selectedMasterCodes.join(',') : 'all'
+				sortOrder
 			});
+			for (const side of reportSides(reportType)) {
+				const prefix = reportType === 'combined' ? `${side}.` : '';
+				const { entityIds, projectIds, masterCodes, categories } = filters[side];
+				if (entityIds.length) params.set(`${prefix}entityIds`, entityIds.join(','));
+				if (projectIds.length) params.set(`${prefix}projectIds`, projectIds.join(','));
+				if (masterCodes.length) params.set(`${prefix}masterCodes`, masterCodes.join(','));
+				for (const category of categories) params.append(`${prefix}categories`, category);
+			}
 			report = await api(`/api/reports?${params}`);
 		} catch (err) {
 			toast.error(err.message);
@@ -148,7 +158,8 @@
 	const exportCsv = () => {
 		const rows = sections.flatMap((section) => section.rows.map((row) => ({ ...row, side: section.side })));
 		const commentsColumn = { label: 'Comments', value: (row) => row.comments };
-		// Mixed exports keep Comments last; an expense-only export puts it after Entity like the report.
+		const amountColumn = { label: 'Amount', value: (row) => row.amount };
+		// Expense-only exports follow the expense table; mixed exports keep their existing order.
 		const expenseOnly = rows.length > 0 && rows.every((row) => row.side === 'expense');
 		downloadCsv(
 			`${slug(data.company.name)}-report-${report.start}-to-${report.end}.csv`,
@@ -156,12 +167,12 @@
 				{ label: 'Type', value: (row) => (row.side === 'income' ? 'Income' : 'Expense') },
 				{ label: 'Date', value: (row) => row.date },
 				{ label: 'Entity', value: (row) => row.entity_name },
-				...(expenseOnly ? [commentsColumn] : []),
+				...(expenseOnly ? [amountColumn, commentsColumn] : []),
 				{ label: 'Projects', value: (row) => row.project_names },
 				{ label: 'Mode', value: (row) => row.payment_mode },
 				{ label: 'Category', value: (row) => row.source },
 				{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
-				{ label: 'Amount', value: (row) => row.amount },
+				...(expenseOnly ? [] : [amountColumn]),
 				{ label: 'Entity cumulative', value: (row) => row.entity_cumulative },
 				...(expenseOnly ? [] : [commentsColumn])
 			],
@@ -188,7 +199,16 @@
 	onMount(async () => {
 		applyPreset('this-fy');
 		try {
-			[entities, projects, masters] = await Promise.all([api('/api/entities'), api('/api/projects'), api('/api/heads')]);
+			const [entityRows, projectRows, masterRows, options] = await Promise.all([
+				api('/api/entities'), api('/api/projects'), api('/api/heads'), api('/api/master-options')
+			]);
+			entities = entityRows;
+			projects = projectRows;
+			masters = masterRows;
+			categoryOptions = {
+				income: categoryOptionsFor(options.credit_sources),
+				expense: categoryOptionsFor(options.expense_sources)
+			};
 		} catch (err) {
 			toast.error(err.message);
 		}
@@ -209,7 +229,7 @@
 </header>
 
 <section class="card no-print">
-	<form class="card-body" on:submit|preventDefault={runReport}>
+	<form class="card-body report-form" on:submit|preventDefault={runReport}>
 		<div class="form-grid">
 			<label class="field">
 				<span class="label">Quick range</span>
@@ -228,18 +248,6 @@
 					{/each}
 				</div>
 			</div>
-			<div class="field">
-				<label class="label" for="report-entities">Entities</label>
-				<MultiSelect id="report-entities" options={entityOptions} bind:value={selectedEntityIds} placeholder="All entities" />
-			</div>
-			<div class="field">
-				<label class="label" for="report-projects">Projects</label>
-				<MultiSelect id="report-projects" options={projectOptions} bind:value={selectedProjectIds} placeholder="All projects" />
-			</div>
-			<div class="field">
-				<label class="label" for="report-masters">Master balance</label>
-				<MultiSelect id="report-masters" options={masterOptions} bind:value={selectedMasterCodes} placeholder="All master balances" />
-			</div>
 			<label class="field">
 				<span class="label">Date order</span>
 				<select class="select" bind:value={sortOrder}>
@@ -247,9 +255,32 @@
 					<option value="oldest">Oldest first</option>
 				</select>
 			</label>
-			<div class="field run">
-				<button class="btn btn-primary" type="submit" disabled={running}><Icon name="refresh" size={15} /> {running ? 'Running…' : 'Run report'}</button>
-			</div>
+		</div>
+		{#each reportSides(reportType) as side (side)}
+			<fieldset class="report-filters">
+				<legend>{side === 'income' ? 'Income filters' : 'Expense filters'}</legend>
+				<div class="form-grid">
+					<div class="field">
+						<label class="label" for="report-{side}-entities">Entities</label>
+						<MultiSelect id="report-{side}-entities" options={entityOptions} bind:value={filters[side].entityIds} placeholder="All entities" />
+					</div>
+					<div class="field">
+						<label class="label" for="report-{side}-projects">Projects</label>
+						<MultiSelect id="report-{side}-projects" options={projectOptions} bind:value={filters[side].projectIds} placeholder="All projects" />
+					</div>
+					<div class="field">
+						<label class="label" for="report-{side}-masters">Master balances</label>
+						<MultiSelect id="report-{side}-masters" options={masterOptions} bind:value={filters[side].masterCodes} placeholder="All master balances" />
+					</div>
+					<div class="field">
+						<label class="label" for="report-{side}-categories">Categories</label>
+						<MultiSelect id="report-{side}-categories" options={categoryOptions[side]} bind:value={filters[side].categories} placeholder="All categories" />
+					</div>
+				</div>
+			</fieldset>
+		{/each}
+		<div class="run">
+			<button class="btn btn-primary" type="submit" disabled={running}><Icon name="refresh" size={15} /> {running ? 'Running…' : 'Run report'}</button>
 		</div>
 	</form>
 </section>
@@ -258,8 +289,11 @@
 	<div class="print-only letterhead">
 		<div>
 			<h1>{data.company.legal_name || data.company.name}</h1>
-			{#if reportProjectNames.length}<h2 class="letterhead-project">{reportProjectNames.join(', ')}</h2>{/if}
-				{#if reportMasterNames.length}<h2 class="letterhead-project">Master balance: {reportMasterNames.join(', ')}</h2>{/if}
+			{#if filterSummaries.length === 1}
+				{@const { projectNames, masterNames } = filterSummaries[0]}
+				{#if projectNames.length}<h2 class="letterhead-project">{projectNames.join(', ')}</h2>{/if}
+				{#if masterNames.length}<h2 class="letterhead-project">Master balance: {masterNames.join(', ')}</h2>{/if}
+			{/if}
 			{#if data.company.address}<p>{data.company.address}</p>{/if}
 			<p>
 				{[data.company.tax_id ? `GSTIN/PAN: ${data.company.tax_id}` : '', data.company.phone, data.company.email].filter(Boolean).join(' · ')}
@@ -268,7 +302,9 @@
 		<div class="letterhead-meta">
 			<strong>{labelize(report.reportType)} report</strong>
 			<p>{formatDate(report.start)} – {formatDate(report.end)}</p>
-			<p>{filterSummary}</p>
+			{#each filterSummaries as summary (summary.side)}
+				<p>{#if filterSummaries.length > 1}<strong>{labelize(summary.side)}</strong> · {/if}{summary.text}</p>
+			{/each}
 			<p>Generated {formatDate(todayIso())}</p>
 		</div>
 	</div>
@@ -398,8 +434,8 @@
 							<th>Date</th>
 							<th>Entity</th>
 							{#if section.side === 'expense'}
-								<th class="center">Comments</th>
 								<th class="num">Amount</th>
+								<th class="center">Comments</th>
 								{#if columns.expense.head}<th class="center">Master balance</th>{/if}
 							{/if}
 							{#if columns[section.side].projects}<th>Projects</th>{/if}
@@ -427,8 +463,8 @@
 									{/if}
 								</td>
 								{#if section.side === 'expense'}
-									<td class="comments center">{row.comments || '—'}</td>
 									<td class="num amount {section.side}">{formatINR(row.amount)}</td>
+									<td class="comments center">{row.comments || '—'}</td>
 									{#if columns.expense.head}<td class="center">{row.head_name || row.master_owner}</td>{/if}
 								{/if}
 								{#if columns[section.side].projects}<td>{row.project_names || '—'}</td>{/if}
@@ -449,7 +485,7 @@
 						<tfoot>
 							<tr>
 								{#if section.side === 'expense'}
-									<td colspan="3">Total · {plural(section.rows.length, 'entry', 'entries')}</td>
+									<td colspan="2">Total · {plural(section.rows.length, 'entry', 'entries')}</td>
 									<td class="num amount {section.side}">{formatINR(section.total)}</td>
 									{#if expenseTrailingColumns > 0}<td colspan={expenseTrailingColumns}></td>{/if}
 								{:else}
@@ -467,8 +503,23 @@
 {/if}
 
 <style>
+	.report-form {
+		display: grid;
+		gap: 16px;
+	}
+	.report-filters {
+		min-width: 0;
+		margin: 0;
+		padding: 8px 12px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.report-filters legend {
+		padding: 0 6px;
+		font-weight: 600;
+	}
 	.run {
-		align-content: end;
+		justify-self: end;
 	}
 	.run .btn {
 		height: 38px;

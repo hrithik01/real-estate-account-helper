@@ -61,6 +61,9 @@ export const compareRowsByDate = (left, right, direction = 'latest') => {
 const compareRowsByEntered = (left, right) =>
 	String(right.created_at || '').localeCompare(String(left.created_at || '')) || Number(right.id || 0) - Number(left.id || 0);
 
+const compareRowsByAmount = (left, right) =>
+	Number(right.amount) - Number(left.amount) || compareRowsByDate(left, right);
+
 const adjustAccountBalance = (accountId, delta, companyId) => {
 	if (!accountId || !Number.isFinite(delta) || delta === 0) return;
 	db.prepare('UPDATE accounts SET account_balance = account_balance + ? WHERE id = ? AND company_id = ?').run(
@@ -111,20 +114,29 @@ const normalizePage = (value) => {
 
 const isActive = (value) => value && value !== 'all';
 
+const filterValues = (searchParams, key, legacyValue) => {
+	const values = searchParams.getAll(key).filter(Boolean);
+	return values.length > 0 ? values : isActive(legacyValue) ? [legacyValue] : [];
+};
+
 export const listTransactions = (kind, companyId, searchParams) => {
 	const config = KINDS[kind];
 	const get = (key) => searchParams.get(key);
 	const start = get('start');
 	const end = get('end');
-	const entityId = get('entityId');
+	const entityIds = filterValues(searchParams, 'entityIds', get('entityId')).map(Number);
 	const paymentMode = get('paymentMode');
-	const source = get('source') || get(kind === 'income' ? 'creditSource' : 'expenseSource');
+	const categories = filterValues(searchParams, 'categories', get('source') || get(kind === 'income' ? 'creditSource' : 'expenseSource'));
 	const projectId = get('projectId');
-	const head = get('head');
+	const masterCodes = filterValues(searchParams, 'masterCodes', get('head'));
 	const timestampFrom = get('timestampFrom');
 	const timestampTo = get('timestampTo');
 	const search = text(get('q')).toLowerCase();
 	const exportAll = get('all') === '1';
+	const sort = get('sort');
+	let compareRows = compareRowsByDate;
+	if (sort === 'entered') compareRows = compareRowsByEntered;
+	if (sort === 'amount') compareRows = compareRowsByAmount;
 	const limitParam = Number(get('limit') || 100);
 	const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : 100;
 
@@ -138,21 +150,18 @@ export const listTransactions = (kind, companyId, searchParams) => {
 		sql += ' AND t.date <= ?';
 		params.push(end);
 	}
-	if (isActive(entityId)) {
-		sql += ' AND t.entity_id = ?';
-		params.push(Number(entityId));
+	for (const [column, values] of [
+		['entity_id', entityIds],
+		[config.sourceField, categories],
+		['master_owner', masterCodes]
+	]) {
+		if (values.length === 0) continue;
+		sql += ` AND t.${column} IN (${values.map(() => '?').join(',')})`;
+		params.push(...values);
 	}
 	if (isActive(paymentMode)) {
 		sql += ' AND t.payment_mode = ?';
 		params.push(paymentMode);
-	}
-	if (isActive(source)) {
-		sql += ` AND t.${config.sourceField} = ?`;
-		params.push(source);
-	}
-	if (isActive(head)) {
-		sql += ' AND t.master_owner = ?';
-		params.push(head);
 	}
 	if (isActive(projectId)) {
 		sql += ` AND EXISTS (SELECT 1 FROM ${config.link} l WHERE l.${config.linkFk} = t.id AND l.project_id = ?)`;
@@ -175,7 +184,7 @@ export const listTransactions = (kind, companyId, searchParams) => {
 			}
 			return true;
 		})
-		.sort(get('sort') === 'entered' ? compareRowsByEntered : (left, right) => compareRowsByDate(left, right, 'latest'));
+		.sort(compareRows);
 
 	const totalCount = rows.length;
 	const totalAmount = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);

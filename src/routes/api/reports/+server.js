@@ -40,7 +40,7 @@ const parseCodes = (raw) => {
 	return [...new Set(String(raw).split(',').map((value) => value.trim()).filter(Boolean))];
 };
 
-const loadRows = (kind, companyId, start, end, entityIds, projectIds, masterCodes) => {
+const loadRows = (kind, companyId, { start, end, entityIds, projectIds, masterCodes, categories }) => {
 	const config = KINDS[kind];
 	let where = 't.company_id = ? AND t.date BETWEEN ? AND ?';
 	const params = [companyId, start, end];
@@ -51,6 +51,10 @@ const loadRows = (kind, companyId, start, end, entityIds, projectIds, masterCode
 	if (masterCodes.length > 0) {
 		where += ` AND t.master_owner IN (${masterCodes.map(() => '?').join(',')})`;
 		params.push(...masterCodes);
+	}
+	if (categories.length > 0) {
+		where += ` AND t.${config.sourceField} IN (${categories.map(() => '?').join(',')})`;
+		params.push(...categories);
 	}
 	if (projectIds.length > 0) {
 		where += ` AND EXISTS (SELECT 1 FROM ${config.link} l WHERE l.${config.linkFk} = t.id AND l.project_id IN (${projectIds.map(() => '?').join(',')}))`;
@@ -161,6 +165,7 @@ export const GET = ({ url, locals }) => {
 	const entityIds = parseIds(url.searchParams.get('entityIds') || url.searchParams.get('entityId') || 'all');
 	const projectIds = parseIds(url.searchParams.get('projectIds') || 'all');
 	const masterCodes = parseCodes(url.searchParams.get('masterCodes') || 'all');
+	const categories = [...new Set(url.searchParams.getAll('categories').filter(Boolean))];
 	const groupBy = url.searchParams.get('groupBy') || 'source';
 
 	if (!start || !end) error(400, 'Start and end dates are required.');
@@ -168,9 +173,22 @@ export const GET = ({ url, locals }) => {
 	if (!['income', 'expense', 'combined'].includes(reportType)) error(400, 'Invalid report type.');
 	if (!Object.hasOwn(GROUPERS, groupBy)) error(400, 'Invalid grouping.');
 
-	// Totals always cover both sides so the net figure stays meaningful for single-sided reports.
-	const incomeRows = loadRows('income', companyId, start, end, entityIds, projectIds, masterCodes);
-	const expenseRows = loadRows('expense', companyId, start, end, entityIds, projectIds, masterCodes);
+	const sharedFilters = { entityIds, projectIds, masterCodes, categories };
+	const filtersFor = (side) => {
+		if (reportType !== 'combined') return sharedFilters;
+		const params = url.searchParams;
+		return {
+			entityIds: params.has(`${side}.entityIds`) ? parseIds(params.get(`${side}.entityIds`)) : entityIds,
+			projectIds: params.has(`${side}.projectIds`) ? parseIds(params.get(`${side}.projectIds`)) : projectIds,
+			masterCodes: params.has(`${side}.masterCodes`) ? parseCodes(params.get(`${side}.masterCodes`)) : masterCodes,
+			categories: params.has(`${side}.categories`)
+				? [...new Set(params.getAll(`${side}.categories`).filter(Boolean))]
+				: categories
+		};
+	};
+	const appliedFilters = { income: filtersFor('income'), expense: filtersFor('expense') };
+	const incomeRows = loadRows('income', companyId, { start, end, ...appliedFilters.income });
+	const expenseRows = loadRows('expense', companyId, { start, end, ...appliedFilters.expense });
 	const total = (rows) => rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
 	const prepare = (rows) => addEntityCumulative(rows).sort((left, right) => compareRowsByDate(left, right, sortOrder));
 	const total_income = total(incomeRows);
@@ -185,6 +203,8 @@ export const GET = ({ url, locals }) => {
 		entityIds,
 		projectIds,
 		masterCodes,
+		categories,
+		appliedFilters,
 		total_income,
 		total_expense,
 		net: total_income - total_expense,
