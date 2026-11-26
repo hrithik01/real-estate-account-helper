@@ -1,7 +1,7 @@
 <script>
 	// @ts-nocheck
 	import '../app.css';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import { afterNavigate, invalidateAll } from '$app/navigation';
@@ -38,9 +38,13 @@
 	const ALL_ITEMS = NAV.flatMap((group) => group.items);
 
 	let theme = 'light';
+	let sidebarCollapsed = false;
 	let switcherOpen = false;
 	let switcherEl;
+	let switcherButton;
 	let navOpen = false;
+	let mobileOpenButton;
+	let mobileCloseButton;
 	let createOpen = false;
 
 	$: company = data.company;
@@ -48,8 +52,11 @@
 	$: setActiveCompanyId(company?.id);
 	// Dialogs and toasts render outside the shell, so the company colour also goes on <html>.
 	$: if (browser) document.documentElement.style.setProperty('--accent', company?.color || '#2563eb');
-	$: pageTitle = ALL_ITEMS.find((item) => item.href === $page.url.pathname)?.label || 'Company Ledger';
-	$: isActive = (href) => (href === '/' ? $page.url.pathname === '/' : $page.url.pathname.startsWith(href));
+	$: pathname = $page.url.pathname;
+	$: activeItem = ALL_ITEMS.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+	$: pageTitle = activeItem?.label || 'Company Ledger';
+	$: sidebarAction = sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+	$: themeAction = theme === 'dark' ? 'Light mode' : 'Dark mode';
 
 	const toggleTheme = () => {
 		theme = theme === 'dark' ? 'light' : 'dark';
@@ -57,8 +64,34 @@
 		storage.set('ledger-theme', theme);
 	};
 
-	const switchCompany = async (target) => {
+	const toggleSidebar = () => {
+		sidebarCollapsed = !sidebarCollapsed;
 		switcherOpen = false;
+		const preference = sidebarCollapsed ? 'collapsed' : '';
+		document.documentElement.dataset.sidebar = preference;
+		storage.set('ledger-sidebar', preference);
+	};
+
+	const openMobileNav = async () => {
+		navOpen = true;
+		await tick();
+		mobileCloseButton.focus({ preventScroll: true });
+	};
+
+	const closeMobileNav = async () => {
+		navOpen = false;
+		switcherOpen = false;
+		await tick();
+		mobileOpenButton.focus({ preventScroll: true });
+	};
+
+	const closeSwitcher = () => {
+		switcherOpen = false;
+		switcherButton.focus();
+	};
+
+	const switchCompany = async (target) => {
+		closeSwitcher();
 		if (target.id === company?.id) return;
 		try {
 			await api('/api/companies/active', { method: 'PUT', body: { id: target.id } });
@@ -79,6 +112,12 @@
 		if (switcherOpen && switcherEl && !switcherEl.contains(event.target)) switcherOpen = false;
 	};
 
+	const onEscape = (event) => {
+		if (event.key !== 'Escape' || event.defaultPrevented || createOpen) return;
+		if (switcherOpen) closeSwitcher();
+		else if (navOpen) closeMobileNav();
+	};
+
 	afterNavigate(() => {
 		navOpen = false;
 		switcherOpen = false;
@@ -86,6 +125,14 @@
 
 	onMount(() => {
 		theme = document.documentElement.dataset.theme || 'light';
+		sidebarCollapsed = document.documentElement.dataset.sidebar === 'collapsed';
+		const mobileLayout = window.matchMedia('(max-width: 960px)');
+		const closeMenus = () => {
+			navOpen = false;
+			switcherOpen = false;
+		};
+		mobileLayout.addEventListener('change', closeMenus);
+		return () => mobileLayout.removeEventListener('change', closeMenus);
 	});
 </script>
 
@@ -94,27 +141,33 @@
 	<meta name="description" content="Company Ledger — income, expenses, masters, finance and reports for every company you run." />
 </svelte:head>
 
-<svelte:window on:mousedown={onWindowClick} on:keydown={(event) => event.key === 'Escape' && (switcherOpen = false)} />
+<svelte:window on:mousedown={onWindowClick} on:keydown={onEscape} />
 
 <div class="shell accent-scope" style={company ? `--accent: ${company.color}` : ''}>
-	<aside class="sidebar no-print" class:open={navOpen}>
+	<aside class="sidebar no-print" id="ledger-sidebar" class:open={navOpen}>
 		<div class="brand">
-			<span class="brand-mark"><Icon name="logo" size={18} stroke={2} /></span>
-			<div>
+			<span class="brand-mark sidebar-label"><Icon name="logo" size={18} stroke={2} /></span>
+			<div class="brand-copy sidebar-label">
 				<strong>Company Ledger</strong>
 				<span>Books &amp; reports</span>
 			</div>
+			<button class="sidebar-toggle desktop-toggle" type="button" aria-label={sidebarAction} title={sidebarAction} aria-controls="ledger-sidebar" aria-expanded={!sidebarCollapsed} on:click={toggleSidebar}>
+				<span class="toggle-arrow"><Icon name="chevronLeft" size={17} stroke={2} /></span>
+			</button>
+			<button class="sidebar-toggle mobile-close" type="button" aria-label="Close menu" title="Close menu" bind:this={mobileCloseButton} on:click={closeMobileNav}>
+				<Icon name="chevronLeft" size={17} stroke={2} />
+			</button>
 		</div>
 
 		{#if company}
 			<div class="switcher" bind:this={switcherEl}>
-				<button class="switcher-btn" type="button" aria-haspopup="menu" aria-expanded={switcherOpen} on:click={() => (switcherOpen = !switcherOpen)}>
+				<button class="switcher-btn" type="button" aria-label={`Switch company, ${company.name}`} title={sidebarCollapsed ? `Switch company · ${company.name}` : undefined} aria-haspopup="menu" aria-expanded={switcherOpen} bind:this={switcherButton} on:click={() => (switcherOpen = !switcherOpen)}>
 					<span class="avatar" style="background: {company.color}">{company.code || initials(company.name)}</span>
-					<span class="switcher-text">
+					<span class="switcher-text sidebar-label">
 						<strong>{company.name}</strong>
 						<span>{companies.length} {companies.length === 1 ? 'company' : 'companies'}</span>
 					</span>
-					<Icon name="chevronsUpDown" size={14} />
+					<span class="switcher-chevron sidebar-label"><Icon name="chevronsUpDown" size={14} /></span>
 				</button>
 				{#if switcherOpen}
 					<div class="switcher-menu" role="menu">
@@ -127,7 +180,10 @@
 							</button>
 						{/each}
 						<div class="menu-divider"></div>
-						<button type="button" role="menuitem" class="menu-item" on:click={() => ((switcherOpen = false), (createOpen = true))}>
+					<button type="button" role="menuitem" class="menu-item" on:click={() => {
+						closeSwitcher();
+						createOpen = true;
+					}}>
 							<span class="menu-icon"><Icon name="plus" size={14} /></span>
 							<span class="menu-name">New company</span>
 						</button>
@@ -141,32 +197,34 @@
 
 			<nav aria-label="Main">
 				{#each NAV as group}
-					<p class="nav-section">{group.section}</p>
-					{#each group.items as item}
-						<a href={item.href} class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined}>
-							<Icon name={item.icon} size={16} />
-							{item.label}
-						</a>
-					{/each}
+					<div class="nav-group">
+						<p class="nav-section sidebar-label">{group.section}</p>
+						{#each group.items as item}
+							<a href={item.href} class:active={item === activeItem} aria-current={item === activeItem ? 'page' : undefined} aria-label={item.label} title={sidebarCollapsed ? item.label : undefined}>
+								<Icon name={item.icon} size={17} />
+								<span class="nav-label sidebar-label">{item.label}</span>
+							</a>
+						{/each}
+					</div>
 				{/each}
 			</nav>
 		{/if}
 
 		<div class="sidebar-foot">
-			<button class="theme-btn" type="button" on:click={toggleTheme}>
-				<Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-				{theme === 'dark' ? 'Light mode' : 'Dark mode'}
+			<button class="theme-btn" type="button" aria-label={themeAction} title={sidebarCollapsed ? themeAction : undefined} on:click={toggleTheme}>
+				<Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+				<span class="sidebar-label">{themeAction}</span>
 			</button>
 		</div>
 	</aside>
 
 	{#if navOpen}
-		<button class="scrim no-print" type="button" aria-label="Close menu" on:click={() => (navOpen = false)}></button>
+		<button class="scrim no-print" type="button" aria-label="Dismiss menu" tabindex="-1" on:click={closeMobileNav}></button>
 	{/if}
 
-	<div class="main">
+	<div class="main" inert={navOpen}>
 		<header class="topbar no-print">
-			<button class="btn btn-ghost btn-icon" type="button" aria-label="Open menu" on:click={() => (navOpen = true)}>
+			<button class="btn btn-ghost btn-icon" type="button" aria-label="Open menu" aria-controls="ledger-sidebar" aria-expanded={navOpen} bind:this={mobileOpenButton} on:click={openMobileNav}>
 				<Icon name="menu" size={18} />
 			</button>
 			{#if company}
@@ -203,34 +261,46 @@
 <style>
 	.shell {
 		display: grid;
-		grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+		grid-template-columns: var(--shell-sidebar-width, var(--sidebar-w)) minmax(0, 1fr);
 		min-height: 100vh;
 	}
 	.sidebar {
 		position: sticky;
 		top: 0;
 		height: 100vh;
+		height: 100dvh;
 		display: flex;
 		flex-direction: column;
 		gap: 14px;
 		padding: 16px 12px;
 		background: var(--surface);
 		border-right: 1px solid var(--border);
-		overflow-y: auto;
 		z-index: 60;
 	}
 	.brand {
+		position: relative;
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		padding: 4px 8px 6px;
+		gap: 8px;
+		min-height: 49px;
+		padding: 4px;
+		padding-inline-end: 48px;
 	}
-	.brand strong {
+	.brand-copy {
+		min-width: 0;
+	}
+	.brand-copy strong,
+	.brand-copy span {
 		display: block;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.brand-copy strong {
 		font-size: 15px;
 		letter-spacing: -0.01em;
 	}
-	.brand span {
+	.brand-copy span {
 		font-size: 12px;
 		color: var(--muted);
 	}
@@ -250,6 +320,39 @@
 		border-radius: 16px;
 		background: var(--accent);
 		color: #fff;
+	}
+	.sidebar-toggle {
+		position: absolute;
+		inset-inline-end: 2px;
+		display: grid;
+		place-items: center;
+		width: 36px;
+		height: 36px;
+		padding: 0;
+		border: 1px solid var(--border);
+		border-radius: 9px;
+		background: var(--surface);
+		color: var(--muted);
+		cursor: pointer;
+		transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+	}
+	.sidebar-toggle:hover {
+		border-color: var(--border-strong);
+		background: var(--surface-2);
+		color: var(--text);
+	}
+	.sidebar-toggle:focus-visible,
+	.theme-btn:focus-visible {
+		outline: none;
+		box-shadow: var(--ring);
+	}
+	.toggle-arrow,
+	.switcher-chevron {
+		display: flex;
+		flex: none;
+	}
+	.mobile-close {
+		display: none;
 	}
 
 	.switcher {
@@ -291,6 +394,9 @@
 	}
 	.switcher-text span {
 		font-size: 12px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	.switcher-menu {
 		position: absolute;
@@ -303,7 +409,7 @@
 		border: 1px solid var(--border);
 		border-radius: 12px;
 		box-shadow: var(--shadow-lg);
-		max-height: 70vh;
+		max-height: min(70vh, calc(100dvh - 132px));
 		overflow-y: auto;
 	}
 	.menu-label {
@@ -363,7 +469,15 @@
 	}
 
 	nav {
+		min-height: 0;
+		margin: -4px;
+		padding: 4px;
+		overflow-y: auto;
+		scrollbar-width: thin;
+	}
+	.nav-group {
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 2px;
 	}
 	.nav-section {
@@ -375,10 +489,12 @@
 		letter-spacing: 0.06em;
 	}
 	nav a {
+		position: relative;
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		padding: 8px 10px;
+		min-height: 40px;
+		padding: 7px 10px;
 		border-radius: 8px;
 		color: var(--text-2);
 		text-decoration: none;
@@ -391,8 +507,25 @@
 	}
 	nav a.active {
 		background: var(--accent-soft);
-		color: var(--accent);
+		color: var(--text);
 		font-weight: 600;
+	}
+	nav a.active::before {
+		content: '';
+		position: absolute;
+		inset-block: 11px;
+		inset-inline-start: 0;
+		width: 2px;
+		border-radius: 2px;
+		background: var(--accent);
+	}
+	nav a :global(svg) {
+		flex: none;
+	}
+	.nav-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	nav a:focus-visible {
 		outline: none;
@@ -409,13 +542,19 @@
 		align-items: center;
 		gap: 10px;
 		width: 100%;
-		padding: 8px 10px;
+		min-height: 40px;
+		padding: 7px 10px;
 		border: 0;
 		border-radius: 8px;
 		background: transparent;
 		color: var(--text-2);
 		cursor: pointer;
 		font-weight: 500;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.theme-btn :global(svg) {
+		flex: none;
 	}
 	.theme-btn:hover {
 		background: var(--surface-3);
@@ -428,7 +567,7 @@
 		display: none;
 	}
 	.content {
-		max-width: 1320px;
+		max-width: var(--content-max, 1320px);
 		margin: 0 auto;
 		padding: 28px 32px 48px;
 	}
@@ -452,6 +591,50 @@
 		display: none;
 	}
 
+	@media (width > 960px) {
+		.shell {
+			transition: grid-template-columns 0.2s ease;
+		}
+		.content {
+			transition: max-width 0.2s ease;
+		}
+		.toggle-arrow {
+			transition: transform 0.2s ease;
+		}
+		:global(html[data-sidebar='collapsed']) .shell {
+			--shell-sidebar-width: 64px;
+			--content-max: 100%;
+		}
+		:global(html[data-sidebar='collapsed']) .sidebar-label {
+			display: none;
+		}
+		:global(html[data-sidebar='collapsed']) .brand {
+			padding-inline: 0;
+		}
+		:global(html[data-sidebar='collapsed']) .toggle-arrow {
+			transform: rotate(180deg);
+		}
+		:global(html[data-sidebar='collapsed']) .switcher-btn,
+		:global(html[data-sidebar='collapsed']) nav a,
+		:global(html[data-sidebar='collapsed']) .theme-btn {
+			justify-content: center;
+			padding-inline: 0;
+		}
+		:global(html[data-sidebar='collapsed']) .switcher-btn {
+			min-height: 40px;
+			padding-block: 4px;
+		}
+		:global(html[data-sidebar='collapsed']) .switcher-menu {
+			inset: 0 auto auto calc(100% + 22px);
+			width: 232px;
+		}
+		:global(html[data-sidebar='collapsed']) .nav-group + .nav-group {
+			margin-top: 8px;
+			padding-top: 8px;
+			border-top: 1px solid var(--border);
+		}
+	}
+
 	@media (max-width: 960px) {
 		.shell {
 			grid-template-columns: minmax(0, 1fr);
@@ -463,11 +646,22 @@
 			bottom: 0;
 			width: min(var(--sidebar-w), 86vw);
 			transform: translateX(-100%);
-			transition: transform 0.2s ease;
+			visibility: hidden;
+			transition: transform 0.2s ease, visibility 0s 0.2s;
 			box-shadow: var(--shadow-lg);
 		}
 		.sidebar.open {
 			transform: none;
+			visibility: visible;
+			transition-delay: 0s;
+		}
+		.desktop-toggle {
+			display: none;
+		}
+		.mobile-close {
+			display: grid;
+			width: 40px;
+			height: 40px;
 		}
 		.scrim {
 			display: block;
@@ -491,6 +685,15 @@
 		}
 		.content {
 			padding: 20px 16px 40px;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.shell,
+		.sidebar,
+		.content,
+		.toggle-arrow {
+			transition: none;
 		}
 	}
 

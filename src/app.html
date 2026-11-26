@@ -5,11 +5,14 @@
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<script>
-			// Apply the saved theme before first paint to avoid a light/dark flash.
+			// Apply appearance preferences before first paint.
 			try {
 				const stored = localStorage.getItem('ledger-theme') || localStorage.getItem('theme');
 				const dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
 				document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+				if (localStorage.getItem('ledger-sidebar') === 'collapsed') {
+					document.documentElement.dataset.sidebar = 'collapsed';
+				}
 			} catch {
 				document.documentElement.dataset.theme = 'light';
 			}
