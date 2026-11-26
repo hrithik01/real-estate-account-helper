@@ -57,6 +57,8 @@ export const ENTITY_TYPES = [
 	'owner'
 ];
 
+export const ALL_PROJECT_ENTITY_TYPES = ['owner', 'merchant', 'financer', 'employee'];
+
 export const PAYMENT_MODES = ['cash', 'account'];
 
 export const TRANSACTION_TYPES = ['credit', 'debit'];

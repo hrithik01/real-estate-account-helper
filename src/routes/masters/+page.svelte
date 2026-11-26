@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { api, storage } from '$lib/api.js';
-	import { BANK_SUGGESTIONS } from '$lib/constants.js';
+	import { ALL_PROJECT_ENTITY_TYPES, BANK_SUGGESTIONS } from '$lib/constants.js';
 	import { formatINR, labelize, plural } from '$lib/format.js';
 	import { confirmDialog } from '$lib/confirm.js';
 	import { toast } from '$lib/toast.js';
@@ -52,7 +52,7 @@
 	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name, hint: project.property_location }));
 	$: filteredEntities = entities.filter((entity) => {
 		if (filterEntityTypes.length > 0 && !filterEntityTypes.includes(entity.entity_type)) return false;
-		if (filterEntityProjectIds.length > 0 && !(entity.project_ids || []).some((id) => filterEntityProjectIds.includes(String(id)))) return false;
+		if (filterEntityProjectIds.length > 0 && !entity.all_projects && !(entity.project_ids || []).some((id) => filterEntityProjectIds.includes(String(id)))) return false;
 		if (entitySearch && !`${entity.name} ${entity.comments || ''} ${entity.entity_code}`.toLowerCase().includes(entitySearch.toLowerCase())) return false;
 		return true;
 	});
@@ -93,7 +93,7 @@
 	const openEdit = (type, row) => {
 		const values = { ...BLANK[type]() };
 		for (const key of Object.keys(values)) if (row[key] != null) values[key] = row[key];
-		if (type === 'entity') values.project_ids = (row.project_ids || []).map(String);
+		if (type === 'entity') values.project_ids = row.all_projects ? [] : (row.project_ids || []).map(String);
 		if (type === 'project') values.current_registered_owner_entity_id = row.current_registered_owner_entity_id ? String(row.current_registered_owner_entity_id) : '';
 		editor = { type, id: row.id, values, row };
 	};
@@ -298,7 +298,7 @@
 							<td class="primary">{entity.name}{#if entity.comments}<span class="cell-sub">{entity.comments}</span>{/if}</td>
 							<td><span class="badge">{labelize(entity.entity_type)}</span></td>
 							<td class="mono">{entity.entity_code}</td>
-							<td>{entity.project_names?.length ? entity.project_names.join(', ') : '—'}</td>
+							<td>{entity.all_projects ? 'All projects' : entity.project_names?.join(', ') || '—'}</td>
 							<td class="num">{entity.transaction_count}</td>
 							<td class="actions">
 								<span class="row-actions">
@@ -421,7 +421,12 @@
 				</label>
 				<div class="field span-all">
 					<span class="label">Linked projects</span>
-					<MultiSelect options={projectOptions} bind:value={editor.values.project_ids} placeholder="No projects" emptyLabel="No projects yet." />
+					{#if ALL_PROJECT_ENTITY_TYPES.includes(editor.values.entity_type)}
+						<span>All projects</span>
+						<span class="hint">New projects are linked automatically.</span>
+					{:else}
+						<MultiSelect options={projectOptions} bind:value={editor.values.project_ids} placeholder="No projects" emptyLabel="No projects yet." />
+					{/if}
 				</div>
 				<label class="field span-all"><span class="label">Comments</span><input class="input" bind:value={editor.values.comments} /></label>
 			{:else if editor.type === 'head'}

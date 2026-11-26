@@ -1,5 +1,6 @@
 // @ts-nocheck
 import db from '$lib/server/db.js';
+import { ALL_PROJECT_ENTITY_TYPES } from '$lib/constants.js';
 import { normalizeIdList, ownsAll } from '$lib/server/company.js';
 
 export const normalizeProjectIds = (value) => normalizeIdList(Array.isArray(value) ? value : []);
@@ -32,8 +33,16 @@ const getEntityProjectRows = (entityIds) => {
 		.all(...entityIds);
 };
 
-const hydrateEntities = (rows) => {
-	const projectRows = getEntityProjectRows(rows.map((row) => row.id));
+const hydrateEntities = (rows, companyId) => {
+	const manualRows = rows.filter((row) => !ALL_PROJECT_ENTITY_TYPES.includes(row.entity_type));
+	const projectRows = getEntityProjectRows(manualRows.map((row) => row.id));
+	const companyProjects = manualRows.length < rows.length
+		? db.prepare('SELECT id, property_name FROM projects WHERE company_id = ? ORDER BY property_name ASC').all(companyId)
+		: [];
+	const allProjects = {
+		project_ids: companyProjects.map((project) => project.id),
+		project_names: companyProjects.map((project) => project.property_name)
+	};
 	const entityProjects = new Map();
 
 	for (const row of projectRows) {
@@ -43,9 +52,13 @@ const hydrateEntities = (rows) => {
 	}
 
 	return rows.map((row) => {
+		if (ALL_PROJECT_ENTITY_TYPES.includes(row.entity_type)) {
+			return { ...row, all_projects: true, ...allProjects };
+		}
 		const attachedProjects = entityProjects.get(row.id) || [];
 		return {
 			...row,
+			all_projects: false,
 			project_ids: attachedProjects.map((project) => project.id),
 			project_names: attachedProjects.map((project) => project.property_name)
 		};
@@ -63,11 +76,11 @@ export const listEntities = (companyId) => {
 			 ORDER BY e.name COLLATE NOCASE ASC`
 		)
 		.all(companyId);
-	return hydrateEntities(rows);
+	return hydrateEntities(rows, companyId);
 };
 
 export const getEntityById = (id, companyId) => {
 	const row = db.prepare('SELECT * FROM entities WHERE id = ? AND company_id = ?').get(id, companyId);
 	if (!row) return null;
-	return hydrateEntities([row])[0] || null;
+	return hydrateEntities([row], companyId)[0] || null;
 };

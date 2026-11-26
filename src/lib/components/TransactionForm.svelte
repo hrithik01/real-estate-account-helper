@@ -46,12 +46,13 @@
 	$: showSubtypes = kind === 'expense' && /material|service|utility/i.test(value[sourceField] || '');
 	$: projectOptions = projects.map((project) => ({ value: String(project.id), label: project.property_name, hint: project.property_location }));
 	$: selectedProjects = (value.project_ids || []).map(String);
+	const matchesProjects = (entity, ids) =>
+		ids.length === 0 || entity?.all_projects || (entity?.project_ids || []).some((id) => ids.includes(String(id)));
 	// Only offer entities attached to the chosen projects (the current choice always stays visible).
 	$: entityOptions = entities.filter(
 		(entity) =>
 			String(entity.id) === String(value.entity_id) ||
-			(((typeFilter ?? allTypes).includes(entity.entity_type)) &&
-				(selectedProjects.length === 0 || (entity.project_ids || []).map(String).some((id) => selectedProjects.includes(id))))
+			((typeFilter ?? allTypes).includes(entity.entity_type) && matchesProjects(entity, selectedProjects))
 	);
 	// Keep a legacy source selectable while editing an entry that still uses it.
 	$: sourceOptions = value[sourceField] && !sources.includes(value[sourceField]) ? [value[sourceField], ...sources] : sources;
@@ -68,8 +69,7 @@
 		let entity_id = value.entity_id;
 		if (entity_id && ids.length > 0) {
 			const entity = entities.find((item) => String(item.id) === String(entity_id));
-			const linked = (entity?.project_ids || []).map(String).some((id) => ids.includes(id));
-			if (!linked) entity_id = '';
+			if (!matchesProjects(entity, ids)) entity_id = '';
 		}
 		value = { ...value, project_ids: ids, entity_id };
 	};

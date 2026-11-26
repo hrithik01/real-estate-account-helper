@@ -1,6 +1,7 @@
 // @ts-nocheck
 import db from '$lib/server/db.js';
 import { error, json } from '@sveltejs/kit';
+import { ALL_PROJECT_ENTITY_TYPES } from '$lib/constants.js';
 import { parseId, readJson, requireCompanyId, text } from '$lib/server/company.js';
 import {
 	getEntityById,
@@ -16,6 +17,7 @@ export const PUT = async ({ params, request, locals }) => {
 	const body = await readJson(request);
 	const name = text(body.name);
 	const entity_type = text(body.entity_type);
+	const allProjects = ALL_PROJECT_ENTITY_TYPES.includes(entity_type);
 	const projectIds = normalizeProjectIds(body.project_ids);
 
 	if (!name) error(400, 'Entity name is required.');
@@ -24,13 +26,13 @@ export const PUT = async ({ params, request, locals }) => {
 	// A type removed from the custom list stays valid for records that already use it.
 	const keepsType = existing.entity_type === entity_type;
 	if (!keepsType && !getMasterOptions(companyId).entity_types.includes(entity_type)) error(400, 'Valid entity type is required.');
-	if (!validateProjectIds(projectIds, companyId)) error(400, 'One or more attached projects are invalid.');
+	if (!allProjects && !validateProjectIds(projectIds, companyId)) error(400, 'One or more attached projects are invalid.');
 
 	const changes = db.transaction(() => {
 		const result = db
 			.prepare('UPDATE entities SET name = ?, entity_type = ?, entity_code = ?, comments = ? WHERE id = ? AND company_id = ?')
 			.run(name, entity_type, getEntityCode(entity_type), text(body.comments) || null, id, companyId);
-		if (result.changes > 0) replaceEntityProjects(id, projectIds);
+		if (result.changes > 0 && !allProjects) replaceEntityProjects(id, projectIds);
 		return result.changes;
 	})();
 
