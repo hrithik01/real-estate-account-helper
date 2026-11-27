@@ -14,8 +14,8 @@ export const POST = async ({ request, locals }) => {
 	const values = readFinanceEntry(await readJson(request), companyId);
 	const result = db
 		.prepare(
-			`INSERT INTO finance_entries (company_id, date, entity_id, amount, interest_rate, interest_payout, comments)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO finance_entries (company_id, date, entity_id, amount, entry_type, interest_rate, interest_payout, comments)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(companyId, ...values);
 	return json(db.prepare(`${FINANCE_SELECT} WHERE f.id = ?`).get(result.lastInsertRowid), { status: 201 });

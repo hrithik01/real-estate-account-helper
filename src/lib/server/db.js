@@ -15,7 +15,8 @@ const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const FINANCE_ENTRY_TYPE = "TEXT NOT NULL DEFAULT 'finance_taken' CHECK (entry_type IN ('finance_taken', 'payout'))";
 
 const timestampSlug = () => new Date().toISOString().replace(/[:.]/g, '-');
 
@@ -112,6 +113,7 @@ const TABLE_DEFS = {
 			date TEXT NOT NULL,
 			entity_id INTEGER,
 			amount REAL NOT NULL,
+			entry_type ${FINANCE_ENTRY_TYPE},
 			interest_rate REAL NOT NULL DEFAULT 1.5,
 			interest_payout TEXT NOT NULL DEFAULT 'monthly' CHECK (interest_payout IN ('monthly', 'quarterly', 'half-yearly', 'annually')),
 			comments TEXT,
@@ -365,8 +367,15 @@ const migrateLegacyDatabase = () => {
 
 const runMigrations = () => {
 	const version = db.pragma('user_version', { simple: true });
-	if (version >= SCHEMA_VERSION) {
+	if (version >= 1) {
 		createFreshSchema();
+		if (version < 2) {
+			backupDatabase('pre-finance-payouts');
+			db.transaction(() => {
+				ensureColumn('finance_entries', 'entry_type', FINANCE_ENTRY_TYPE);
+				db.pragma('user_version = 2');
+			}).immediate();
+		}
 		return;
 	}
 	if (tableExists('income') || tableExists('settings')) {
