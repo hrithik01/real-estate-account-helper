@@ -5,8 +5,11 @@
 	import { PAYMENT_MODES } from '$lib/constants.js';
 	import { formatDate, formatINR, formatTimestamp, labelize, plural, todayIso } from '$lib/format.js';
 	import { downloadCsv, slug } from '$lib/csv.js';
+	import { downloadTablePdf, pdfMoneyColor } from '$lib/pdf.js';
 	import { confirmDialog } from '$lib/confirm.js';
+	import { createEntrySelection } from '$lib/entry-selection.js';
 	import { toast } from '$lib/toast.js';
+	import EntrySelectionToolbar from './EntrySelectionToolbar.svelte';
 	import Icon from './Icon.svelte';
 	import Modal from './Modal.svelte';
 	import MultiSelect from './MultiSelect.svelte';
@@ -60,6 +63,9 @@
 	let mastersLoaded = false;
 
 	let rows = [];
+	const selection = createEntrySelection();
+	$: selection.setRows(rows);
+	$: allRowsChecked = $selection.ids.size > 0 && $selection.ids.size === rows.length;
 	let pagination = { page: 1, totalPages: 1, totalCount: 0, totalAmount: 0 };
 	let page = 1;
 	let sort = 'date';
@@ -311,40 +317,60 @@
 		}
 	};
 
-	const exportCsv = async () => {
+	const exportLedger = async (format) => {
 		exporting = true;
 		try {
 			const payload = await api(`${endpoint}?${queryString({ all: '1' })}`);
-			downloadCsv(
-				`${slug(company.name)}-${kind}-${todayIso()}.csv`,
-				[
-					{ label: 'Date', value: (row) => row.date },
-					{ label: 'Entity', value: (row) => row.entity_name },
-					...(isIncome ? [] : [
-						{ label: 'Amount', value: (row) => row.amount },
-						{ label: 'Comments', value: (row) => row.comments }
-					]),
-					{ label: 'Entity code', value: (row) => row.entity_code },
-					{ label: 'Projects', value: (row) => row.project_names },
-					{ label: 'Mode', value: (row) => row.payment_mode },
-					{ label: 'Account', value: (row) => (row.account_holder ? `${row.account_holder} (${row.bank_name})` : '') },
-					{ label: 'Category', value: (row) => row.source },
-					...(isIncome
-						? []
-						: [
-								{ label: 'Material type', value: (row) => row.material_type },
-								{ label: 'Service type', value: (row) => row.service_type },
-								{ label: 'Utility type', value: (row) => row.utility_type }
-							]),
-					{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
-					...(isIncome ? [
-						{ label: 'Amount', value: (row) => row.amount },
-						{ label: 'Comments', value: (row) => row.comments }
-					] : []),
-					{ label: 'Entered on', value: (row) => row.created_at }
-				],
-				payload.rows
-			);
+			const filename = `${slug(company.name)}-${kind}-${todayIso()}.${format}`;
+			const exportColumns = [
+				{ label: 'Date', value: (row) => row.date },
+				{ label: 'Entity', value: (row) => row.entity_name },
+				...(isIncome ? [] : [
+					{ label: 'Amount', value: (row) => row.amount },
+					{ label: 'Comments', value: (row) => row.comments }
+				]),
+				{ label: 'Entity code', value: (row) => row.entity_code },
+				{ label: 'Projects', value: (row) => row.project_names },
+				{ label: 'Mode', value: (row) => row.payment_mode },
+				{ label: 'Account', value: (row) => (row.account_holder ? `${row.account_holder} (${row.bank_name})` : '') },
+				{ label: 'Category', value: (row) => row.source },
+				...(isIncome
+					? []
+					: [
+							{ label: 'Material type', value: (row) => row.material_type },
+							{ label: 'Service type', value: (row) => row.service_type },
+							{ label: 'Utility type', value: (row) => row.utility_type }
+						]),
+				{ label: 'Master balance', value: (row) => row.head_name || row.master_owner },
+				...(isIncome ? [
+					{ label: 'Amount', value: (row) => row.amount },
+					{ label: 'Comments', value: (row) => row.comments }
+				] : []),
+				{ label: 'Entered on', value: (row) => row.created_at }
+			];
+			if (format === 'pdf') {
+				const combinedColumns = ['Entity code', 'Material type', 'Service type', 'Utility type'];
+				const pdfColumns = exportColumns.filter((column) => !combinedColumns.includes(column.label)).map((column) => {
+					switch (column.label) {
+						case 'Date': return { ...column, width: 58 };
+						case 'Entity': return { ...column, value: (row) => [row.entity_name, row.entity_code].filter(Boolean).join('\n') };
+						case 'Amount': return { ...column, width: 74, numeric: true, value: (row) => formatINR(row.amount), color: () => pdfMoneyColor(isIncome) };
+						case 'Mode': return { ...column, width: 38 };
+						case 'Entered on': return { ...column, width: 70, value: (row) => formatTimestamp(row.created_at) };
+						case 'Category': return { ...column, value: (row) => [row.source, row.material_type, row.service_type, row.utility_type].filter(Boolean).map(labelize).join('\n') };
+						default: return column;
+					}
+				});
+				await downloadTablePdf(filename, {
+					title: `${label} ledger`,
+					subtitle: company.name,
+					details: [`${plural(payload.rows.length, 'entry', 'entries')} · Total ${formatINR(payload.pagination.totalAmount)}`],
+					landscape: true,
+					sections: [{ columns: pdfColumns, rows: payload.rows }]
+				});
+			} else {
+				downloadCsv(filename, exportColumns, payload.rows);
+			}
 			toast.success(`Exported ${payload.rows.length} entries`);
 		} catch (err) {
 			toast.error(err.message);
@@ -436,9 +462,12 @@
 					<option value="amount">Amount (high to low)</option>
 				</select>
 			</label>
-			<button class="btn btn-sm" type="button" on:click={exportCsv} disabled={exporting || pagination.totalCount === 0}>
+			<button class="btn btn-sm" type="button" on:click={() => exportLedger('csv')} disabled={exporting || loading || pagination.totalCount === 0}>
 				<Icon name="download" size={14} />
-				{exporting ? 'Exporting…' : 'Export CSV'}
+				Export CSV
+			</button>
+			<button class="btn btn-sm" type="button" on:click={() => exportLedger('pdf')} disabled={exporting || loading || pagination.totalCount === 0}>
+				<Icon name="download" size={14} /> Export PDF
 			</button>
 		</div>
 	</div>
@@ -532,10 +561,18 @@
 		{/if}
 	</div>
 
+	<EntrySelectionToolbar {selection} rowCount={rows.length} disabled={loading} />
 	<div class="table-wrap">
 		<table class="table">
 			<thead>
 				<tr>
+					{#if $selection.active}
+						<th scope="col" class="entry-selection-cell no-print">
+							<input type="checkbox" aria-label="Select all visible entries" checked={allRowsChecked}
+								indeterminate={$selection.ids.size > 0 && !allRowsChecked} disabled={loading || rows.length === 0}
+								on:change={(event) => selection.selectAll(event.currentTarget.checked)} />
+						</th>
+					{/if}
 					<th>Date</th>
 					{#if columns.timestamp}<th>Entered on</th>{/if}
 					<th>Entity</th>
@@ -558,12 +595,12 @@
 				{#if loading && rows.length === 0}
 					{#each Array(5) as _}
 						<tr>
-							<td colspan={visibleColumnCount + 1}><div class="skeleton" style="height: 18px"></div></td>
+							<td colspan={visibleColumnCount + ($selection.active ? 2 : 1)}><div class="skeleton" style="height: 18px"></div></td>
 						</tr>
 					{/each}
 				{:else if rows.length === 0}
 					<tr>
-						<td colspan={visibleColumnCount + 1}>
+						<td colspan={visibleColumnCount + ($selection.active ? 2 : 1)}>
 							<div class="empty">
 								<span class="empty-icon"><Icon name={isIncome ? 'income' : 'expense'} size={20} /></span>
 								<h3>{activeFilterCount > 0 ? 'No entries match these filters' : `No ${label.toLowerCase()} entries yet`}</h3>
@@ -573,7 +610,14 @@
 					</tr>
 				{:else}
 					{#each rows as row (row.id)}
-						<tr class:dim={loading}>
+						{@const checked = $selection.ids.has(row.id)}
+						<tr class:dim={loading} class:entry-unselected={$selection.ids.size > 0 && !checked}>
+							{#if $selection.active}
+								<td class="entry-selection-cell no-print">
+									<input type="checkbox" aria-label="Select entry {row.id}" {checked} disabled={loading}
+										on:change={(event) => selection.setChecked(row.id, event.currentTarget.checked)} />
+								</td>
+							{/if}
 							<td class="nowrap">{formatDate(row.date)}</td>
 							{#if columns.timestamp}<td class="nowrap muted">{formatTimestamp(row.created_at)}</td>{/if}
 							<td class="primary">
@@ -658,63 +702,6 @@
 	.notice a {
 		color: inherit;
 		font-weight: 600;
-	}
-	.card-header p {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.card-header .amount {
-		color: var(--text);
-	}
-	.sort-control {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		white-space: nowrap;
-	}
-	.sort-control .select {
-		width: auto;
-	}
-	.filters {
-		padding: 16px 20px 12px;
-		border-bottom: 1px solid var(--border);
-		display: grid;
-		gap: 12px;
-	}
-	.filters .field {
-		min-width: 150px;
-		flex: 1 1 150px;
-	}
-	.filters .field.grow {
-		flex: 2 1 240px;
-	}
-	.search {
-		position: relative;
-		display: flex;
-		align-items: center;
-		color: var(--muted);
-	}
-	.search :global(svg) {
-		position: absolute;
-		left: 11px;
-	}
-	.search .input {
-		padding-left: 32px;
-	}
-	.filter-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.spacer {
-		flex: 1;
-	}
-	.pending {
-		font-size: 12.5px;
-		color: var(--warn);
 	}
 	.columns-bar {
 		display: flex;

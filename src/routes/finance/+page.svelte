@@ -3,9 +3,13 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api.js';
 	import { PAYOUT_TYPES } from '$lib/constants.js';
+	import { downloadCsvTables, slug } from '$lib/csv.js';
 	import { formatDate, formatINR, todayIso, plural } from '$lib/format.js';
+	import { downloadTablePdf, pdfMoneyColor } from '$lib/pdf.js';
 	import { confirmDialog } from '$lib/confirm.js';
+	import { createEntrySelection } from '$lib/entry-selection.js';
 	import { toast } from '$lib/toast.js';
+	import EntrySelectionToolbar from '$lib/components/EntrySelectionToolbar.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import FinanceFields from './FinanceFields.svelte';
@@ -22,12 +26,14 @@
 	const payoutLabel = (value) => PAYOUT_TYPES.find((item) => item.value === value)?.label || value;
 	const typeLabel = (row) => row.entry_type === 'payout' ? 'Payout' : 'Finance Taken';
 	const matches = (row, query) => `${row.entity_name || ''} ${row.entity_code || ''} ${row.comments || ''} ${typeLabel(row)} ${row.amount}`.toLowerCase().includes(query);
+	const selection = createEntrySelection();
 
 	let asOf = todayIso();
 	let entities = [];
 	let entries = [];
 	let lenders = [];
 	let loading = true;
+	let exporting = false;
 	let loadRequest = 0;
 	let loadError = '';
 	let saving = false;
@@ -42,7 +48,10 @@
 	$: selectedParty = lenders.find((entity) => String(entity.id) === party);
 	$: scoped = selectedParty ? entries.filter((row) => String(row.entity_id) === String(selectedParty.id)) : entries;
 	$: query = search.trim().toLowerCase();
-	$: matchingCount = scoped.filter((row) => matches(row, query)).length;
+	$: matchingRows = scoped.filter((row) => matches(row, query));
+	$: matchingCount = matchingRows.length;
+	$: selection.setRows(matchingRows);
+	$: allRowsChecked = $selection.ids.size > 0 && $selection.ids.size === matchingCount;
 	$: months = monthlyBalances(scoped, asOf);
 	$: current = months[0];
 	$: hasCredit = months.some((month) => month.credit > 0);
@@ -125,6 +134,57 @@
 		}
 	};
 
+	const exportStatement = async (format) => {
+		const isPdf = format === 'pdf';
+		const moneyColumn = (label, field) => ({
+			label, numeric: true, value: (row) => isPdf ? money(row[field]) : row[field] / 100
+		});
+		const sections = [
+			{
+				title: 'Monthly balances', rows: months,
+				columns: [
+					{ label: 'Month', value: (row) => isPdf ? monthLabel(row.month) : row.month },
+					moneyColumn('Opening owed', 'opening'), moneyColumn('Finance taken', 'taken'),
+					moneyColumn('Interest accrued', 'interest'), moneyColumn('Payouts', 'payouts'),
+					moneyColumn('Interest outstanding', 'outstandingInterest'), moneyColumn('Interest due', 'due'),
+					...(hasCredit ? [moneyColumn('Unapplied payouts', 'credit')] : []), moneyColumn('Net owed', 'owed')
+				]
+			},
+			{
+				title: 'Finance activity', rows: matchingRows,
+				columns: [
+					{ label: 'Date', width: 76, value: (row) => isPdf ? formatDate(row.date) : row.date },
+					{ label: 'Entity', value: (row) => row.entity_name || 'Removed entity' },
+					{ label: 'Amount', width: 85, numeric: true, value: (row) => isPdf ? formatINR(row.amount) : row.amount, color: (row) => pdfMoneyColor(row.entry_type === 'payout') },
+					{ label: 'Type', width: 70, value: typeLabel },
+					{ label: 'Interest terms', value: (row) => row.entry_type === 'payout' ? '' : `${row.interest_rate}% / month · ${payoutLabel(row.interest_payout)}` },
+					{ label: 'Comments', value: (row) => row.comments }
+				]
+			}
+		];
+		const filename = `${slug(data.company.name)}-finance${selectedParty ? `-${slug(selectedParty.name)}` : ''}-${asOf}.${format}`;
+		exporting = true;
+		try {
+			if (isPdf) {
+				await downloadTablePdf(filename, {
+					title: 'Finance statement', subtitle: data.company.name,
+					details: [
+						`Through ${formatDate(asOf)} · ${selectedParty?.name || 'All entities'}`,
+						`Currently owed ${money(current.owed)} · Principal ${money(current.principal)} · Outstanding interest ${money(current.outstandingInterest)}`,
+						query && `Activity search: ${search.trim()}`
+					],
+					landscape: true, sections
+				});
+			} else {
+				downloadCsvTables(filename, sections);
+			}
+		} catch (err) {
+			toast.error(err.message);
+		} finally {
+			exporting = false;
+		}
+	};
+
 	onMount(load);
 </script>
 
@@ -136,9 +196,14 @@
 			<p class="no-print">Track borrowings, interest and payments in your independent finance book.</p>
 			<p class="print-only">Finance statement through {formatDate(asOf)} · {selectedParty?.name || 'All entities'}</p>
 		</div>
-		<button type="button" class="btn no-print" disabled={loading || !!loadError} on:click={() => window.print()}>
-			<Icon name="download" size={16} /> Export PDF
-		</button>
+		<div class="page-actions no-print">
+			<button type="button" class="btn" disabled={exporting || loading || !!loadError} on:click={() => exportStatement('csv')}>
+				<Icon name="download" size={16} /> Export CSV
+			</button>
+			<button type="button" class="btn" disabled={exporting || loading || !!loadError} on:click={() => exportStatement('pdf')}>
+				<Icon name="download" size={16} /> Export PDF
+			</button>
+		</div>
 	</header>
 
 	{#if loadError}
@@ -259,11 +324,19 @@
 				<input class="input" bind:value={search} placeholder="Search activity" aria-label="Search finance activity" />
 			</label>
 		</div>
+		<EntrySelectionToolbar {selection} rowCount={matchingCount} disabled={loading || !!loadError} />
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll wide tables.) -->
 		<div class="table-wrap" role="region" aria-label="Finance activity table" tabindex="0">
 			<table class="table activity-table">
 				<thead>
 					<tr>
+						{#if $selection.active}
+							<th scope="col" class="entry-selection-cell no-print">
+								<input type="checkbox" aria-label="Select all visible entries" checked={allRowsChecked}
+									indeterminate={$selection.ids.size > 0 && !allRowsChecked} disabled={loading || !!loadError || matchingCount === 0}
+									on:change={(event) => selection.selectAll(event.currentTarget.checked)} />
+							</th>
+						{/if}
 						<th scope="col">Date</th><th scope="col">Entity</th><th scope="col" class="num">Amount</th>
 						<th scope="col">Type</th><th scope="col">Interest terms</th><th scope="col">Comments</th>
 						<th scope="col" class="actions no-print"><span class="sr-only">Actions</span></th>
@@ -272,7 +345,14 @@
 				<tbody>
 					{#each scoped as row (row.id)}
 						{@const payout = row.entry_type === 'payout'}
-						<tr class:search-hidden={!matches(row, query)}>
+						{@const checked = $selection.ids.has(row.id)}
+						<tr class:search-hidden={!matches(row, query)} class:entry-unselected={$selection.ids.size > 0 && !checked}>
+							{#if $selection.active}
+								<td class="entry-selection-cell no-print">
+									<input type="checkbox" aria-label="Select entry {row.id}" {checked} disabled={loading || !!loadError}
+										on:change={(event) => selection.setChecked(row.id, event.currentTarget.checked)} />
+								</td>
+							{/if}
 							<td class="date-cell">
 								{formatDate(row.date)}
 								{#if row.date > asOf}<span class="cell-sub">Scheduled</span>{/if}
@@ -291,7 +371,7 @@
 						</tr>
 					{/each}
 					{#if !matchingCount}
-						<tr class:no-print={scoped.length > 0}><td colspan="7">
+						<tr class:no-print={scoped.length > 0}><td colspan={$selection.active ? 8 : 7}>
 							<div class="empty"><h3>{loading ? 'Loading…' : scoped.length ? 'No matching entries' : 'No finance activity yet'}</h3></div>
 						</td></tr>
 					{/if}

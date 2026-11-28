@@ -4,10 +4,13 @@ const escape = (value) => {
 	return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-/** Downloads rows as a CSV file. `columns` is [{ label, value: (row) => any }]. */
-export const downloadCsv = (filename, columns, rows) => {
+const tableLines = (columns, rows) => {
 	const lines = [columns.map((column) => escape(column.label)).join(',')];
 	for (const row of rows) lines.push(columns.map((column) => escape(column.value(row))).join(','));
+	return lines;
+};
+
+const downloadLines = (filename, lines) => {
 	const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
 	const url = URL.createObjectURL(blob);
 	const link = document.createElement('a');
@@ -18,6 +21,16 @@ export const downloadCsv = (filename, columns, rows) => {
 	link.remove();
 	setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
+
+/** Downloads rows as a CSV file. `columns` is [{ label, value: (row) => any }]. */
+export const downloadCsv = (filename, columns, rows) => downloadLines(filename, tableLines(columns, rows));
+
+/** Downloads a statement with multiple labeled tables in one CSV. */
+export const downloadCsvTables = (filename, sections) => downloadLines(filename,
+	sections.flatMap(({ title, columns, rows }, index) => [
+		...(index ? [''] : []), escape(title), ...tableLines(columns, rows)
+	])
+);
 
 export const slug = (value) =>
 	String(value || '')

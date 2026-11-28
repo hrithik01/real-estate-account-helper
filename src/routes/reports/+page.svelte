@@ -4,6 +4,7 @@
 	import { api, storage } from '$lib/api.js';
 	import { formatDate, formatINR, formatShortDate, labelize, todayIso, toIsoDate, plural } from '$lib/format.js';
 	import { downloadCsv, slug } from '$lib/csv.js';
+	import { downloadTablePdf, pdfMoneyColor } from '$lib/pdf.js';
 	import { toast } from '$lib/toast.js';
 	import Icon from '$lib/components/Icon.svelte';
 	import MultiSelect from '$lib/components/MultiSelect.svelte';
@@ -41,6 +42,7 @@
 	let filters = { income: blankFilters(), expense: blankFilters() };
 	let report = null;
 	let running = false;
+	let exporting = false;
 	let columns = readColumns();
 	let showEntityComments = storage.get('ledger:report-entity-comments') === '1';
 	let showEntityCumulative = storage.get('ledger:report-entity-cumulative') !== '0';
@@ -180,20 +182,117 @@
 		);
 	};
 
-	const exportCrossTab = (section) => {
+	const crossTabTotals = (table) => ({ key: 'Total', cells: table.column_totals, total: table.total });
+	const crossTabColumns = (table, indices, isPdf) => {
+		const amount = (value) => isPdf ? formatINR(value) : value;
+		return [
+			{ label: 'Entity type', width: 95, value: (row) => crossTabLabel(row.key) },
+			...indices.map((index) => ({ label: crossTabLabel(table.columns[index]), numeric: true, value: (row) => amount(row.cells[index]) })),
+			{ label: 'Total', width: 89, numeric: true, value: (row) => amount(row.total) }
+		];
+	};
+
+	const crossTabPdfSections = (section) => {
 		const table = section.crossTab;
-		downloadCsv(
-			`${slug(data.company.name)}-${section.side}-entity-type-by-category-${report.start}-to-${report.end}.csv`,
-			[
-				{ label: 'Entity type', value: (row) => crossTabLabel(row.key) },
-				...table.columns.map((column, index) => ({ label: crossTabLabel(column), value: (row) => row.cells[index] })),
-				{ label: 'Total', value: (row) => row.total }
-			],
-			[
-				...table.rows,
-				{ key: 'Total', cells: table.column_totals, total: table.total }
-			]
-		);
+		const categoriesPerTable = 7;
+		const groups = Math.max(1, Math.ceil(table.columns.length / categoriesPerTable));
+		const indices = table.columns.map((_, index) => index);
+		return Array.from({ length: groups }, (_, index) => ({
+			title: `${section.title} · Entity type × category${groups > 1 ? ` (${index + 1} of ${groups})` : ''}`,
+			columns: crossTabColumns(table, indices.slice(index * categoriesPerTable, (index + 1) * categoriesPerTable), true),
+			rows: table.rows,
+			totals: [crossTabTotals(table)]
+		}));
+	};
+
+	const exportCrossTab = async (section, format) => {
+		const table = section.crossTab;
+		const filename = `${slug(data.company.name)}-${section.side}-entity-type-by-category-${report.start}-to-${report.end}.${format}`;
+		if (format === 'csv') {
+			downloadCsv(filename, crossTabColumns(table, table.columns.map((_, index) => index), false), [...table.rows, crossTabTotals(table)]);
+			return;
+		}
+		exporting = true;
+		try {
+			await downloadTablePdf(filename, {
+				title: `${section.title} by entity type and category`,
+				subtitle: data.company.name,
+				details: [`${formatDate(report.start)} - ${formatDate(report.end)}`],
+				landscape: true,
+				sections: crossTabPdfSections(section)
+			});
+		} catch (err) {
+			toast.error(err.message);
+		} finally {
+			exporting = false;
+		}
+	};
+
+	const exportPdf = async () => {
+		const company = data.company;
+		const title = `${labelize(report.reportType)} report`;
+		const filename = `${slug(company.name)}-report-${report.start}-to-${report.end}.pdf`;
+		const amountColumn = (label, field, credit) => ({
+			label, width: 80, numeric: true, value: (row) => formatINR(row[field]),
+		color: (row) => pdfMoneyColor(credit ?? (row[field] >= 0))
+		});
+		const pdfSections = [];
+		if (report.heads.length) {
+			pdfSections.push({
+				title: 'Master balances', rows: report.heads,
+				columns: [
+					{ label: 'Master balance', value: (row) => row.name },
+					...(report.reportType !== 'expense' ? [amountColumn('Income', 'income', true)] : []),
+					...(report.reportType !== 'income' ? [amountColumn('Expense', 'expense', false)] : []),
+					...(report.reportType === 'combined' ? [amountColumn('Net', 'net')] : [])
+				]
+			});
+		}
+		for (const section of sections) {
+			if (section.crossTab?.rows.length) pdfSections.push(...crossTabPdfSections(section));
+		}
+		for (const section of sections) {
+			const isIncome = section.side === 'income';
+			pdfSections.push({
+				title: section.title, rows: section.rows,
+				columns: [
+					{ label: 'Date', width: 72, value: (row) => formatDate(row.date) },
+					{ label: 'Entity', value: (row) => [
+						row.entity_name,
+						showEntityType && row.entity_type && labelize(row.entity_type),
+						showEntityComments && row.entity_comments
+					].filter(Boolean).join('\n') },
+					...(columns[section.side].projects ? [{ label: 'Projects', value: (row) => row.project_names }] : []),
+					...(columns[section.side].type ? [{ label: 'Mode', width: 44, value: (row) => labelize(row.payment_mode) }] : []),
+					...(columns[section.side].source ? [{ label: 'Category', value: (row) => labelize(row.source) }] : []),
+					...(columns[section.side].head ? [{ label: 'Master balance', value: (row) => row.head_name || row.master_owner }] : []),
+					amountColumn('Amount', 'amount', isIncome),
+					...(showEntityCumulative ? [amountColumn('Entity cumulative', 'entity_cumulative', isIncome)] : []),
+					{ label: 'Comments', value: (row) => row.comments }
+				]
+			});
+		}
+		exporting = true;
+		try {
+			await downloadTablePdf(filename, {
+				title,
+				subtitle: company.legal_name || company.name,
+				details: [
+					company.address,
+					[company.tax_id && `GSTIN/PAN: ${company.tax_id}`, company.phone, company.email].filter(Boolean).join(' · '),
+					`${formatDate(report.start)} - ${formatDate(report.end)}`,
+					...filterSummaries.map((summary) => `${labelize(summary.side)} · ${summary.text}`),
+					...sections.map((section) => `${section.title} · ${plural(section.rows.length, 'entry', 'entries')} · ${formatINR(section.total)}`),
+					report.reportType === 'combined' && `Net ${formatINR(report.net)}`
+				],
+				landscape: true,
+				sections: pdfSections
+			});
+		} catch (err) {
+			toast.error(err.message);
+		} finally {
+			exporting = false;
+		}
 	};
 
 	onMount(async () => {
@@ -223,7 +322,8 @@
 		<p>Income, expense or combined statements with entity running totals and category breakdowns.</p>
 	</div>
 	<div class="page-actions">
-		<button class="btn" type="button" on:click={exportCsv} disabled={!report}><Icon name="download" size={15} /> Export CSV</button>
+		<button class="btn" type="button" on:click={exportCsv} disabled={!report || running || exporting}><Icon name="download" size={15} /> Export CSV</button>
+		<button class="btn" type="button" on:click={exportPdf} disabled={!report || running || exporting}><Icon name="download" size={15} /> Export PDF</button>
 		<button class="btn" type="button" on:click={() => window.print()} disabled={!report}><Icon name="printer" size={15} /> Print</button>
 	</div>
 </header>
@@ -369,7 +469,10 @@
 						<h2>{section.title} · entity type × category</h2>
 						<p class="no-print">Where each kind of party was paid or received for.</p>
 					</div>
-					<button class="btn no-print" type="button" on:click={() => exportCrossTab(section)}><Icon name="download" size={15} /> Export CSV</button>
+					<div class="page-actions no-print">
+						<button class="btn" type="button" disabled={running || exporting} on:click={() => exportCrossTab(section, 'csv')}><Icon name="download" size={15} /> Export CSV</button>
+						<button class="btn" type="button" disabled={running || exporting} on:click={() => exportCrossTab(section, 'pdf')}><Icon name="download" size={15} /> Export PDF</button>
+					</div>
 				</div>
 				<div class="table-wrap">
 					<table class="table compact">

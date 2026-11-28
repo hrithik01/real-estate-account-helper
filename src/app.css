@@ -528,6 +528,22 @@ input[type='date'].input {
 .table .center .cell-clamp {
 	margin-inline: auto;
 }
+.table .entry-selection-cell {
+	width: 1%;
+	padding-inline: 14px 8px;
+}
+.entry-selection-cell input {
+	display: block;
+	cursor: pointer;
+}
+@media screen {
+	.table tr.entry-unselected > td:not(.entry-selection-cell) {
+		opacity: 0.32;
+	}
+	.table tr.entry-unselected > td:focus-within {
+		opacity: 1;
+	}
+}
 .table td.primary {
 	color: var(--text);
 	font-weight: 550;
@@ -704,6 +720,63 @@ input[type='date'].input {
 }
 .toolbar .grow {
 	flex: 1 1 220px;
+}
+:is(.ledger-card, .entry-card) > .card-header p {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.ledger-card .card-header .amount {
+	color: var(--text);
+}
+.ledger-card .sort-control {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	white-space: nowrap;
+}
+.ledger-card .sort-control .select {
+	width: auto;
+}
+.ledger-card .filters {
+	padding: 16px 20px 12px;
+	border-bottom: 1px solid var(--border);
+	display: grid;
+	gap: 12px;
+}
+.ledger-card .filters .field {
+	min-width: 150px;
+	flex: 1 1 150px;
+}
+.ledger-card .filters .field.grow {
+	flex: 2 1 240px;
+}
+.ledger-card .field > .search {
+	position: relative;
+	display: flex;
+	align-items: center;
+	color: var(--muted);
+}
+.ledger-card .field > .search svg {
+	position: absolute;
+	left: 11px;
+}
+.ledger-card .field > .search .input {
+	padding-left: 32px;
+}
+.ledger-card .filter-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.ledger-card .filter-actions .spacer {
+	flex: 1;
+}
+.ledger-card .filter-actions .pending {
+	font-size: 12.5px;
+	color: var(--warn);
 }
 .empty {
 	display: grid;
